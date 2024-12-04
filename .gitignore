@@ -1,0 +1,12 @@
+.DS_Store
+.idea
+*.pyc
+*.so
+*.o
+ckpts/*
+models/*
+*.whl
+*.ckpt
+wandb/*
+log_tmp/*
+diffusion/preset
