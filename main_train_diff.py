@@ -81,7 +81,7 @@ def parse_args(input_args=None):
     # parser.add_argument("--train_batch_size", type=int, default=4,
     #                     help="Batch size (per device) for the training dataloader.")
     parser.add_argument("--num_training_epochs", type=int, default=10000)
-    parser.add_argument("--max_train_steps", type=int, default=100000, )
+    parser.add_argument("--max_train_steps", type=int, default=2, ) # 100000
     parser.add_argument("--checkpointing_steps", type=int, default=5000, )
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
                         help="Number of updates steps to accumulate before performing a backward/update pass.", )
@@ -139,7 +139,7 @@ def parse_args(input_args=None):
     parser.add_argument("--neg_prompt", default="", type=str)
     parser.add_argument("--cfg_vsd", default=7.5, type=float)
 
-    parser.add_argument('--regularize', action='store_true')
+    parser.add_argument('--no_vsd', action='store_true')
     parser.add_argument('--test_epoch', type=int, default=1)
 
     # lora setting
@@ -156,6 +156,10 @@ def parse_args(input_args=None):
     parser.add_argument('--val_path', required=True)
     parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='adain')
 
+    parser.add_argument('--train_decoder', action='store_true')
+
+    parser.add_argument('--debug', action='store_true')
+
     if input_args is not None:
         args = parser.parse_args(input_args)
     else:
@@ -165,7 +169,8 @@ def parse_args(input_args=None):
 
 
 def main(args):
-    wandb.init(project="diff-car", name=args.tracker_project_name)
+    if not args.debug:
+        wandb.init(project="diff-car", name=args.tracker_project_name)
 
     args.tracker_project_name = os.path.join("training_results", args.tracker_project_name, datetime.now().strftime("%Y-%m-%d_%H-%M-%S"))
 
@@ -197,7 +202,6 @@ def main(args):
 
     model_gen = OSEDiff_gen(args)
     model_gen.set_train()
-
     model_reg = OSEDiff_reg(args=args, accelerator=accelerator)
     model_reg.set_train()
 
@@ -350,7 +354,7 @@ def main(args):
                 # breakpoint()
                 # KL loss
                 loss_kl = 0
-                if args.regularize:
+                if not args.no_vsd:
                     if torch.cuda.device_count() > 1:
                         loss_kl = model_reg.module.distribution_matching_loss(latents=latents_pred,
                                                                               prompt_embeds=prompt_embeds,
@@ -372,7 +376,7 @@ def main(args):
                 diff loss: let lora model closed to generator
                 """
                 loss_d = 0
-                if args.regularize:
+                if not args.no_vsd:
                     if torch.cuda.device_count() > 1:
                         loss_d = model_reg.module.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
                                                             args=args) * args.lambda_vsd_lora
@@ -395,18 +399,19 @@ def main(args):
 
                     logs = {}
                     # log all the losses
-                    logs["loss_d"] = loss_d.detach().item() if args.regularize else 0
-                    logs["loss_kl"] = loss_kl.detach().item() if args.regularize else 0
+                    logs["loss_d"] = loss_d.detach().item() if not args.no_vsd else 0
+                    logs["loss_kl"] = loss_kl.detach().item() if not args.no_vsd else 0
                     logs["loss_l2"] = loss_l2.detach().item()
                     logs["loss_lpips"] = loss_lpips.detach().item()
                     progress_bar.set_postfix(**logs)
-
-                    wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips'],
-                               'loss_d': logs["loss_d"], 'loss_kl': logs["loss_kl"]})
+                    if not args.debug:
+                        wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips'],
+                                   'loss_d': logs["loss_d"], 'loss_kl': logs["loss_kl"]})
 
                     # checkpoint the model
                     if global_step % args.checkpointing_steps == 1:
-                        outf = os.path.join(args.tracker_project_name, "checkpoints", f"model_{global_step}.pkl")
+                        # outf = os.path.join(args.tracker_project_name, "checkpoints", f"model_{global_step}.pkl")
+                        outf = os.path.join(args.tracker_project_name, "checkpoints", f"model.pkl")
                         accelerator.unwrap_model(model_gen).save_model(outf)
 
                     accelerator.log(logs, step=global_step)
@@ -476,7 +481,8 @@ def main(args):
             # print(
             #     'Average PSNR/SSIM/PSNRB - {} -: {:.2f}$\\vert${:.4f}$\\vert${:.2f}.'.format(
             #         str(quality_factor), ave_psnr, ave_ssim, ave_psnrb))
-            wandb.log({'psnr': ave_psnr, 'ssim': ave_ssim, 'psnrb': ave_psnrb})
+            if not args.debug:
+                wandb.log({'psnr': ave_psnr, 'ssim': ave_ssim, 'psnrb': ave_psnrb})
 
             model_gen.set_train()
 

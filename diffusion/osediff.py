@@ -32,10 +32,29 @@ def initialize_vae(args):
                 l_target_modules_encoder.append(n.replace(".weight", ""))
             elif ('quant_conv' in n) and ('post_quant_conv' not in n):
                 l_target_modules_encoder.append(n.replace(".weight", ""))
+    if args.train_decoder:
+        l_target_modules_decoder = []
+        l_grep = ["conv1", "conv2", "conv_in", "conv_shortcut", "conv", "conv_out", "to_k", "to_q", "to_v", "to_out.0"]
+        for n, p in vae.named_parameters():
+            if "bias" in n or "norm" in n:
+                continue
+            for pattern in l_grep:
+                if pattern in n and ("decoder" in n):
+                    l_target_modules_decoder.append(n.replace(".weight", ""))
+                elif ('quant_conv' in n) and ('post_quant_conv' not in n):
+                    l_target_modules_decoder.append(n.replace(".weight", ""))
+
+        lora_conf_decoder = LoraConfig(r=args.lora_rank, init_lora_weights="gaussian",
+                                       target_modules=l_target_modules_decoder)
+        vae.add_adapter(lora_conf_decoder, adapter_name="default_decoder")
+
 
     lora_conf_encoder = LoraConfig(r=args.lora_rank, init_lora_weights="gaussian",
                                    target_modules=l_target_modules_encoder)
     vae.add_adapter(lora_conf_encoder, adapter_name="default_encoder")
+
+    if args.train_decoder:
+        return vae, l_target_modules_encoder, l_target_modules_decoder
 
     return vae, l_target_modules_encoder
 
@@ -86,7 +105,10 @@ class OSEDiff_gen(torch.nn.Module):
         self.noise_scheduler.alphas_cumprod = self.noise_scheduler.alphas_cumprod.cuda()
         self.args = args
 
-        self.vae, self.lora_vae_modules_encoder = initialize_vae(self.args)
+        if args.train_decoder:
+            self.vae, self.lora_vae_modules_encoder, self.lora_vae_modules_decoder = initialize_vae(self.args)
+        else:
+            self.vae, self.lora_vae_modules_encoder = initialize_vae(self.args)
         self.unet, self.lora_unet_modules_encoder, self.lora_unet_modules_decoder, self.lora_unet_others = initialize_unet(
             self.args)
         self.lora_rank_unet = self.args.lora_rank
@@ -166,6 +188,8 @@ class OSEDiff_gen(torch.nn.Module):
 
     def save_model(self, outf):
         sd = {}
+        if self.args.train_decoder:
+            sd["vae_lora_decoder_modules"] = self.lora_vae_modules_decoder
         sd["vae_lora_encoder_modules"] = self.lora_vae_modules_encoder
         sd["unet_lora_encoder_modules"], sd["unet_lora_decoder_modules"], sd["unet_lora_others_modules"] = \
             self.lora_unet_modules_encoder, self.lora_unet_modules_decoder, self.lora_unet_others
@@ -338,10 +362,16 @@ class OSEDiff_test(torch.nn.Module):
         vae_lora_conf_encoder = LoraConfig(r=model["rank_vae"], init_lora_weights="gaussian",
                                            target_modules=model["vae_lora_encoder_modules"])
         self.vae.add_adapter(vae_lora_conf_encoder, adapter_name="default_encoder")
+        if self.args.train_decoder:
+            vae_lora_conf_decoder = LoraConfig(r=model["rank_vae"], init_lora_weights="gaussian",
+                                               target_modules=model["vae_lora_decoder_modules"])
+            self.vae.add_adapter(vae_lora_conf_decoder, adapter_name="default_decoder")
         for n, p in self.vae.named_parameters():
             if "lora" in n:
                 p.data.copy_(model["state_dict_vae"][n])
         self.vae.set_adapter(['default_encoder'])
+        if self.args.train_decoder:
+            self.vae.set_adapter(['default_decoder'])
 
     def encode_prompt(self, prompt_batch):
         prompt_embeds_list = []
@@ -556,6 +586,8 @@ class OSEDiff_inference_time(torch.nn.Module):
             if "lora" in n:
                 p.data.copy_(model["state_dict_vae"][n])
         self.vae.set_adapter(['default_encoder'])
+        if self.args.train_decoder:
+            self.vae.set_adapter(['default_decoder'])
 
     def encode_prompt(self, prompt_batch):
         prompt_embeds_list = []

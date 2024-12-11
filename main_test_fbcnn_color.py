@@ -1,7 +1,7 @@
 import os.path
 import logging
 import numpy as np
-from datetime import datetime
+from tqdm import tqdm
 from collections import OrderedDict
 import torch
 import cv2
@@ -11,15 +11,45 @@ import requests
 
 
 def main():
-    quality_factor_list = [10, 20, 30, 40, 50, 60, 70, 80, 90]
+    quality_factor_list = [5, 10, 20, 30, 40]
     testset_name = 'LIVE1_color'  # 'LIVE1_color' 'BSDS500_color' 'ICB'
     n_channels = 3  # set 1 for grayscale image, set 3 for color image
-    model_name = 'fbcnn_color.pth'
+    model_name = '160000_G.pth'
     nc = [64, 128, 256, 512]
     nb = 4
     show_img = False  # default: False
     testsets = 'testsets'
     results = 'test_results'
+
+    model_pool = 'model_zoo'  # fixed
+    model_path = os.path.join(model_pool, model_name)
+    if os.path.exists(model_path):
+        print(f'loading model from {model_path}')
+    else:
+        os.makedirs(os.path.dirname(model_path), exist_ok=True)
+        url = 'https://github.com/jiaxi-jiang/FBCNN/releases/download/v1.0/{}'.format(os.path.basename(model_path))
+        r = requests.get(url, allow_redirects=True)
+        print(f'downloading model {model_path}')
+        open(model_path, 'wb').write(r.content)
+
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    border = 0
+
+    # ----------------------------------------
+    # load model
+    # ----------------------------------------
+
+    from models.network_fbcnn import FBCNN as net
+    # model = net(in_nc=n_channels, out_nc=n_channels, nc=nc, nb=nb, act_mode='R')
+    model = net(in_nc=n_channels, out_nc=n_channels, nc=nc, nb=nb, act_mode='BR')
+    model.load_state_dict(torch.load(model_path), strict=True)
+
+    # total_params = sum(p.numel() for p in model.parameters())
+
+    model.eval()
+    for k, v in model.named_parameters():
+        v.requires_grad = False
+    model = model.to(device)
 
     for quality_factor in quality_factor_list:
 
@@ -28,37 +58,10 @@ def main():
         E_path = os.path.join(results, result_name, str(quality_factor))  # E_path, for Estimated images
         util.mkdir(E_path)
 
-        model_pool = 'model_zoo'  # fixed
-        model_path = os.path.join(model_pool, model_name)
-        if os.path.exists(model_path):
-            print(f'loading model from {model_path}')
-        else:
-            os.makedirs(os.path.dirname(model_path), exist_ok=True)
-            url = 'https://github.com/jiaxi-jiang/FBCNN/releases/download/v1.0/{}'.format(os.path.basename(model_path))
-            r = requests.get(url, allow_redirects=True)
-            print(f'downloading model {model_path}')
-            open(model_path, 'wb').write(r.content)
-
         logger_name = result_name + '_qf_' + str(quality_factor)
         utils_logger.logger_info(logger_name, log_path=os.path.join(E_path, logger_name + '.log'))
         logger = logging.getLogger(logger_name)
         logger.info('--------------- quality factor: {:d} ---------------'.format(quality_factor))
-
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        border = 0
-
-        # ----------------------------------------
-        # load model
-        # ----------------------------------------
-
-        from models.network_fbcnn import FBCNN as net
-        model = net(in_nc=n_channels, out_nc=n_channels, nc=nc, nb=nb, act_mode='R')
-        model.load_state_dict(torch.load(model_path), strict=True)
-        model.eval()
-        for k, v in model.named_parameters():
-            v.requires_grad = False
-        model = model.to(device)
-        logger.info('Model path: {:s}'.format(model_path))
 
         test_results = OrderedDict()
         test_results['psnr'] = []
@@ -66,7 +69,7 @@ def main():
         test_results['psnrb'] = []
 
         H_paths = util.get_image_paths(H_path)
-        for idx, img in enumerate(H_paths):
+        for idx, img in tqdm(enumerate(H_paths)):
 
             # ------------------------------------
             # (1) img_L
@@ -104,9 +107,9 @@ def main():
             test_results['psnr'].append(psnr)
             test_results['ssim'].append(ssim)
             test_results['psnrb'].append(psnrb)
-            logger.info(
-                '{:s} - PSNR: {:.2f} dB; SSIM: {:.3f}; PSNRB: {:.2f} dB.'.format(img_name + ext, psnr, ssim, psnrb))
-            logger.info('predicted quality factor: {:d}'.format(round(float(QF * 100))))
+            # logger.info(
+            #     '{:s} - PSNR: {:.2f} dB; SSIM: {:.3f}; PSNRB: {:.2f} dB.'.format(img_name + ext, psnr, ssim, psnrb))
+            # logger.info('predicted quality factor: {:d}'.format(round(float(QF * 100))))
 
             util.imshow(np.concatenate([img_E, img_H], axis=1), title='Recovered / Ground-truth') if show_img else None
             util.imsave(img_E, os.path.join(E_path, img_name + '.png'))
@@ -115,7 +118,7 @@ def main():
         ave_ssim = sum(test_results['ssim']) / len(test_results['ssim'])
         ave_psnrb = sum(test_results['psnrb']) / len(test_results['psnrb'])
         logger.info(
-            'Average PSNR/SSIM/PSNRB - {} -: {:.2f}$\\vert${:.4f}$\\vert${:.2f}.'.format(
+            'Average PSNR/SSIM/PSNRB - {} -: {:.2f}$/{:.4f}$/vert${:.2f}.'.format(
                 result_name + '_' + str(quality_factor), ave_psnr, ave_ssim, ave_psnrb))
 
 

@@ -16,7 +16,6 @@ from models.select_model import define_Model
 from tqdm import tqdm
 import wandb
 wandb.login(key="6b0e4eb09708be0cf3cb37658816b1000bcd16bb")
-wandb.init(project="diff-car", name='fbcnn')
 
 '''
 # --------------------------------------------
@@ -33,16 +32,17 @@ def main(json_path='options/train_fbcnn_color.json'):
     parser.add_argument('-opt', type=str, default=json_path, help='Path to option JSON file.')
 
     opt = option.parse(parser.parse_args().opt, is_train=True)
+
     util.mkdirs((path for key, path in opt['path'].items() if 'pretrained' not in key))
 
     # ----------------------------------------
     # update opt
     # ----------------------------------------
     # -->-->-->-->-->-->-->-->-->-->-->-->-->-
-    init_iter, init_path_G = option.find_last_checkpoint(opt['path']['models'], net_type='G')
+    # init_iter, init_path_G = option.find_last_checkpoint(opt['path']['models'], net_type='G')
+    init_iter, init_path_G = 0, None
     opt['path']['pretrained_netG'] = init_path_G
     current_step = init_iter
-
     border = 0
     # --<--<--<--<--<--<--<--<--<--<--<--<--<-
 
@@ -76,6 +76,7 @@ def main(json_path='options/train_fbcnn_color.json'):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
+    wandb.init(project="diff-car", name=f'fbcnn_bz_{opt["datasets"]["train"]["dataloader_batch_size"]}_no_QF')
     '''
     # ----------------------------------------
     # Step--2 (creat dataloader)
@@ -91,7 +92,7 @@ def main(json_path='options/train_fbcnn_color.json'):
     for phase, dataset_opt in opt['datasets'].items():
         if phase == 'train':
             train_set = define_Dataset(dataset_opt)
-            print('Dataset [{:s} - {:s}] is created.'.format(train_set.__class__.__name__, dataset_opt['name']))
+            # print('Dataset [{:s} - {:s}] is created.'.format(train_set.__class__.__name__, dataset_opt['name']))
             train_size = int(math.ceil(len(train_set) / dataset_opt['dataloader_batch_size']))
             logger.info('Number of train images: {:,d}, iters: {:,d}'.format(len(train_set), train_size))
             train_loader = DataLoader(train_set,
@@ -102,7 +103,7 @@ def main(json_path='options/train_fbcnn_color.json'):
                                       pin_memory=True)
         elif phase == 'test':
             test_set = define_Dataset(dataset_opt)
-            print('Dataset [{:s} - {:s}] is created.'.format(test_set.__class__.__name__, dataset_opt['name']))
+            # print('Dataset [{:s} - {:s}] is created.'.format(test_set.__class__.__name__, dataset_opt['name']))
             test_loader = DataLoader(test_set, batch_size=1,
                                      shuffle=False, num_workers=1,
                                      drop_last=False, pin_memory=True)
@@ -129,11 +130,12 @@ def main(json_path='options/train_fbcnn_color.json'):
     # Step--4 (main training)
     # ----------------------------------------
     '''
+    max_train_steps = 400000
+    progress_bar = tqdm(range(0, max_train_steps), initial=0, desc="Steps")
 
     for epoch in range(1000000):  # keep running
-        for i, train_data in tqdm(enumerate(train_loader), total=len(train_loader)):
+        for i, train_data in enumerate(train_loader):
             current_step += 1
-
             if dataset_type == 'dnpatch' and current_step % 20000 == 0:  # for 'train400'
                 train_loader.dataset.update_data()
 
@@ -153,6 +155,9 @@ def main(json_path='options/train_fbcnn_color.json'):
             G_loss, QF_loss = model.optimize_parameters(current_step)
             wandb.log({'epoch': epoch, 'G_loss': G_loss, 'QF_loss': QF_loss})
 
+            progress_bar.update(1)
+            info = {"G_loss": G_loss, "QF_loss": QF_loss}
+            progress_bar.set_postfix(**info)
             # -------------------------------
             # merge bnorm
             # -------------------------------
@@ -178,73 +183,79 @@ def main(json_path='options/train_fbcnn_color.json'):
                 logger.info('Saving the model.')
                 model.save(current_step)
 
+            if current_step >= max_train_steps:
+                break
 
-            # -------------------------------
-            # 6) testing
-            # -------------------------------
-            if current_step % opt['train']['checkpoint_test'] == 0:
+        if current_step >= max_train_steps:
+            break
+        # -------------------------------
+        # 6) testing
+        # -------------------------------
+        # if current_step % opt['train']['checkpoint_test'] == 0:
 
-                avg_psnr = 0.0
-                avg_ssim = 0.0
-                avg_psnrb = 0.0
-                idx = 0
+        avg_psnr = 0.0
+        avg_ssim = 0.0
+        avg_psnrb = 0.0
+        idx = 0
 
-                for test_data in test_loader:
-                    idx += 1
-                    image_name_ext = os.path.basename(test_data['H_path'][0])
-                    img_name, ext = os.path.splitext(image_name_ext)
+        for test_data in test_loader:
+            idx += 1
+            image_name_ext = os.path.basename(test_data['H_path'][0])
+            img_name, ext = os.path.splitext(image_name_ext)
 
-                    img_dir = os.path.join(opt['path']['images'], img_name)
-                    util.mkdir(img_dir)
+            img_dir = os.path.join(opt['path']['images'], img_name)
+            util.mkdir(img_dir)
 
-                    model.feed_data(test_data)
-                    model.test()
+            model.feed_data(test_data)
+            model.test()
 
-                    visuals = model.current_visuals()
-                    E_img = util.tensor2uint(visuals['E'])
-                    H_img = util.tensor2uint(visuals['H'])
-                    QF = 1-visuals['QF']
-                    # -----------------------
-                    # save estimated image E
-                    # -----------------------
-                    save_img_path = os.path.join(img_dir, '{:s}_{:d}.png'.format(img_name, current_step))
-                    util.imsave(E_img, save_img_path)
+            visuals = model.current_visuals()
+            E_img = util.tensor2uint(visuals['E'])
+            H_img = util.tensor2uint(visuals['H'])
+            QF = 1 - visuals['QF']
+            # -----------------------
+            # save estimated image E
+            # -----------------------
+            save_img_path = os.path.join(img_dir, '{:s}_{:d}.png'.format(img_name, current_step))
+            util.imsave(E_img, save_img_path)
 
-                    # -----------------------
-                    # calculate PSNR
-                    # -----------------------
+            # -----------------------
+            # calculate PSNR
+            # -----------------------
 
-                    current_psnr = util.calculate_psnr(E_img, H_img, border=border)
+            current_psnr = util.calculate_psnr(E_img, H_img, border=border)
 
-                    avg_psnr += current_psnr
+            avg_psnr += current_psnr
 
-                    # -----------------------
-                    # calculate SSIM
-                    # -----------------------
+            # -----------------------
+            # calculate SSIM
+            # -----------------------
 
-                    current_ssim = util.calculate_ssim(E_img, H_img, border=border)
+            current_ssim = util.calculate_ssim(E_img, H_img, border=border)
 
-                    avg_ssim += current_ssim
+            avg_ssim += current_ssim
 
-                    # -----------------------
-                    # calculate PSNRB
-                    # -----------------------
+            # -----------------------
+            # calculate PSNRB
+            # -----------------------
 
-                    current_psnrb = util.calculate_psnrb(H_img, E_img, border=border)
-                    avg_psnrb += current_psnrb
+            current_psnrb = util.calculate_psnrb(H_img, E_img, border=border)
+            avg_psnrb += current_psnrb
 
+            logger.info(
+                '{:->4d}--> {:>10s} | PSNR : {:<4.2f}dB | SSIM : {:<4.3f}dB | PSNRB : {:<4.2f}dB'.format(
+                    idx, image_name_ext, current_psnr, current_ssim, current_psnrb))
+            logger.info('predicted quality factor: {:<4.2f}'.format(float(QF)))
 
-                    logger.info('{:->4d}--> {:>10s} | PSNR : {:<4.2f}dB | SSIM : {:<4.3f}dB | PSNRB : {:<4.2f}dB'.format(idx, image_name_ext, current_psnr, current_ssim, current_psnrb))
-                    logger.info('predicted quality factor: {:<4.2f}'.format(float(QF)))
+        avg_psnr = avg_psnr / idx
+        avg_ssim = avg_ssim / idx
+        avg_psnrb = avg_psnrb / idx
 
-                avg_psnr = avg_psnr / idx
-                avg_ssim = avg_ssim / idx
-                avg_psnrb = avg_psnrb / idx
-
-                # testing log
-                logger.info('<epoch:{:3d}, iter:{:8,d}, Average PSNR : {:<.2f}dB, Average SSIM : {:<.3f}dB, Average PSNRB : {:<.2f}dB\n'.format(epoch, current_step, avg_psnr, avg_ssim, avg_psnrb))
-                wandb.log({'epoch': epoch, 'PSNR': avg_psnr, 'SSIM': avg_ssim, 'PSNRB': avg_psnrb})
-
+        # testing log
+        logger.info(
+            '<epoch:{:3d}, iter:{:8,d}, Average PSNR : {:<.2f}dB, Average SSIM : {:<.3f}dB, Average PSNRB : {:<.2f}dB\n'.format(
+                epoch, current_step, avg_psnr, avg_ssim, avg_psnrb))
+        wandb.log({'epoch': epoch, 'PSNR': avg_psnr, 'SSIM': avg_ssim, 'PSNRB': avg_psnrb})
     logger.info('Saving the final model.')
     model.save('latest')
     logger.info('End of training.')
