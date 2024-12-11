@@ -21,7 +21,12 @@ class DatasetJPEG(data.Dataset):
         # -------------------------------------
         # get the path of H, return None if input is None
         # -------------------------------------
-        self.paths_H = util.get_image_paths(opt['dataroot_H'])
+        if len(opt['dataroot_H']) > 1:
+            self.paths_H = []
+            for root in opt['dataroot_H']:
+                self.paths_H.extend(util.get_image_paths(root))
+        else:
+            self.paths_H = util.get_image_paths(opt['dataroot_H'])
         self.normalize = normalize
 
     def __getitem__(self, index):
