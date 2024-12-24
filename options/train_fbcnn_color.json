@@ -1,7 +1,7 @@
 {
   "task": "FBCNN-Color"  //  root/task/images-models-options
-  , "model": "fbcnn" 
-  , "gpu_ids": [1,2,3]
+  , "model": "fbcnn"
+  , "gpu_ids": [4,5,6,7]
   , "n_channels": 3  // broadcast to "datasets", 1 for grayscale, 3 for color
   , "merge_bn": false               // BN for DnCNN
   , "merge_bn_startpoint": 40000000  // merge BN after N iterations
@@ -14,7 +14,7 @@
     "train": {
       "name": "train_dataset"           // just name
       , "dataset_type": "jpeg"         // "jpeg" | "jpeggray" | "jpeggraydouble"
-      , "dataroot_H": "trainsets/Data_DIV2K_Flickr2K"// path of original training dataset
+      , "dataroot_H": ["/data/dataset/CAR/DIV2K/HR", "/data/dataset/CAR/Flickr2K"] // path of original training dataset
       , "dataroot_L": null            // path of L training dataset
       , "H_size": 96                  // patch size 40 | 64 | 96 | 128 | 192
       , "dataloader_shuffle": true
@@ -23,13 +23,13 @@
     }, "test": {
       "name": "test_dataset"            // just name
       , "dataset_type": "jpeg"         // "jpeg" | "jpeggray" | "jpeggraydouble" 
-      , "dataroot_H": "testsets/Classic5/"  // path of H testing dataset
+      , "dataroot_H": ["testsets/Classic5/"]  // path of H testing dataset
       , "dataroot_L": "testsets/Classic5/10"              // path of L testing dataset
     }
   }
 
   , "netG": {
-    "net_type": "fbcnn"
+    "net_type": "naive_fbcnn"
     , "in_nc": 3        // input channel number
     , "out_nc": 3 // output channel number
     , "nc": [64, 128, 256, 512] // number of channels

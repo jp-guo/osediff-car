@@ -1,10 +1,10 @@
 export HF_ENDPOINT=https://hf-mirror.com
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch main_train_diff.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch main_train_qf_osediff.py \
     --pretrained_model_name_or_path=/data/pretrained/stable-diffusion-2-1-base \
     --ram_path=/data/pretrained/ram_swin_large_14m.pth \
     --val_path=/home/guojinpei/diff-car/testsets/LIVE1_color \
-    --learning_rate=5e-5 \
+    --learning_rate=1e-5 \
     --gradient_accumulation_steps=1 \
     --enable_xformers_memory_efficient_attention --checkpointing_steps 1000 \
     --mixed_precision='fp16' \
@@ -17,9 +17,8 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch main_train_diff.py \
     --lambda_l2=1 \
     --lambda_vsd=1 \
     --lambda_vsd_lora=2 \
-    --tracker_project_name "train_diff_512_div2k+flickr_qf_1-40" \
-    --no_vsd \
-#    --debug \
+    --tracker_project_name "train_qf_oesdiff_fix_qf" \
+    --osediff_path "/home/guojinpei/diff-car/training_results/train_diff_512_div2k+flickr_fix_qf/2024-12-19_22-30-26/checkpoints/model_max_train_steps.pkl" \
 #    --train_decoder \
 #    --no_vsd \
 

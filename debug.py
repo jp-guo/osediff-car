@@ -14,7 +14,8 @@ from PIL import Image
 import cv2
 from collections import OrderedDict
 
-from diffusion.osediff import OSEDiff_test
+from diffusion.qf_osediff import QF_OSEDiff
+from diffusion.osediff import OSEDiff_gen
 from diffusion.my_utils.wavelet_color_fix import adain_color_fix, wavelet_color_fix
 
 from ram.models.ram_lora import ram
@@ -76,7 +77,8 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # initialize the model
-    model = OSEDiff_test(args)
+    model = QF_OSEDiff(args)
+    # model = OSEDiff_gen(args)
 
     # get ram model
     DAPE = ram(pretrained=args.ram_path,
@@ -105,15 +107,15 @@ if __name__ == "__main__":
     print(f'There are {len(H_paths)} images.')
 
     device = 'cuda'
-    lpips_metric = pyiqa.create_metric('lpips', device=device)
-    dists_metric = pyiqa.create_metric('dists', device=device)
-    niqe_metric = pyiqa.create_metric('niqe', device=device)
-    musiq_metric = pyiqa.create_metric('musiq', device=device)
-    maniqa_metric = pyiqa.create_metric('maniqa', device=device)
-    clipiqa_metric = pyiqa.create_metric('clipiqa', device=device)
+    # lpips_metric = pyiqa.create_metric('lpips', device=device)
+    # dists_metric = pyiqa.create_metric('dists', device=device)
+    # niqe_metric = pyiqa.create_metric('niqe', device=device)
+    # musiq_metric = pyiqa.create_metric('musiq', device=device)
+    # maniqa_metric = pyiqa.create_metric('maniqa', device=device)
+    # clipiqa_metric = pyiqa.create_metric('clipiqa', device=device)
 
-    f = open(os.path.join(args.output_dir, 'results.csv'), 'a')
-    for quality_factor in [1, 5, 10, 20, 30, 40]:      # 5, 10, 20, 30, 40
+    # f = open(os.path.join(args.output_dir, 'results.csv'), 'a')
+    for quality_factor in [10]:      # 5, 10, 20, 30, 40
         os.makedirs(os.path.join(args.output_dir, str(quality_factor)), exist_ok=True)
         # os.makedirs(os.path.join(args.output_dir, str(quality_factor)+'_ori'), exist_ok=True)
         test_results = OrderedDict()
@@ -156,95 +158,98 @@ if __name__ == "__main__":
             # translate the image
             lq = lq * 2 - 1
 
-            # decoded_path = os.path.join('/home/guojinpei/diff-car/test_results/LIVE1_color_fbcnn_color', str(quality_factor),
-            #                             os.path.splitext(os.path.basename(img))[0] + '.png')
-            # img_model_decode = Image.open(decoded_path).convert('RGB')
-            # img_model_decode = img_model_decode.resize((new_width, new_height), Image.LANCZOS)
+            decoded_path = os.path.join('/home/guojinpei/diff-car/test_results/LIVE1_color_fbcnn_color', str(quality_factor),
+                                        os.path.splitext(os.path.basename(img))[0] + '.png')
+            img_model_decode = Image.open(decoded_path).convert('RGB')
+            img_model_decode = img_model_decode.resize((new_width, new_height), Image.LANCZOS)
 
             # blur_path = os.path.join(f'/home/guojinpei/diff-car/testsets/LIVE1_color_{quality_factor}_blur',
             #                             os.path.splitext(os.path.basename(img))[0] + '.png')
             # img_blur = Image.open(blur_path).convert('RGB')
             # img_blur = img_blur.resize((new_width, new_height), Image.LANCZOS)
 
-            _, hq = get_validation_prompt(args, img_L, DAPE)
-            # _, hq = get_validation_prompt(args, img_model_decode, DAPE)
+            # _, hq = get_validation_prompt(args, img_L, DAPE)
+            _, hq = get_validation_prompt(args, img_model_decode, DAPE)
             # _, hq = get_validation_prompt(args, img_blur, DAPE)
 
             hq = hq * 2 - 1
-            img_E = model.guided_forward(lq, prompt=validation_prompt, hq=hq, loss_type='mse', alpha=0.005, bp=3, qf=quality_factor)
+            # img_E = model.guided_forward(lq, prompt=validation_prompt, hq=hq, loss_type='mse', alpha=0.005, bp=3)
+            img_E = model(lq, prompt=validation_prompt, qf=torch.tensor(quality_factor / 100., device=device).reshape(-1, 1))
             # img_E = model(lq, prompt=validation_prompt)
+            loss = ((img_E - hq) ** 2).sum()
+            loss.backward()
 
-            img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
-            if args.align_method == 'adain':
-                img_E = adain_color_fix(target=img_E, source=img_L)
-            elif args.align_method == 'wavelet':
-                img_E = wavelet_color_fix(target=img_E, source=img_L)
-            else:
-                pass
+        #     img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
+        #     if args.align_method == 'adain':
+        #         img_E = adain_color_fix(target=img_E, source=img_L)
+        #     elif args.align_method == 'wavelet':
+        #         img_E = wavelet_color_fix(target=img_E, source=img_L)
+        #     else:
+        #         pass
+        #
+        #     img_H = np.array(img_H)
+        #     img_E = np.array(img_E)
+        #
+        #     psnr = utils.calculate_psnr(img_E, img_H, border=0)
+        #     # print(psnr)
+        #     ####
+        #     # new_img_E = model.guided_forward(lq, prompt=validation_prompt, hq=hq, loss_type='ssim', alpha=0.5, bp=3)
+        #     # new_img_E = transforms.ToPILImage()(new_img_E[0].cpu() * 0.5 + 0.5)
+        #     # if args.align_method == 'adain':
+        #     #     new_img_E = adain_color_fix(target=new_img_E, source=img_L)
+        #     # elif args.align_method == 'wavelet':
+        #     #     new_img_E = wavelet_color_fix(target=new_img_E, source=img_L)
+        #     # else:
+        #     #     pass
+        #     # new_img_E = np.array(new_img_E)
+        #     # new_psnr = utils.calculate_psnr(new_img_E, np.array(img_H), border=0)
+        #     # print(f'{img}: {psnr}->{new_psnr}')
+        #
+        #     # ####
+        #
+        #     ssim = utils.calculate_ssim(img_E, img_H, border=0)
+        #     psnrb = utils.calculate_psnrb(img_H, img_E, border=0)
+        #
+        #     utils.imsave(img_E, os.path.join(args.output_dir, str(quality_factor), img_name + '.png'))
+        #     # utils.imsave(img_L, os.path.join(args.output_dir, str(quality_factor)+'_ori', img_name + '.png'))
+        #
+        #     img_E, img_H = torch.tensor(img_E, device=device).permute(2, 1, 0).unsqueeze(0), torch.tensor(img_H,
+        #                                                                                                   device=device).permute(
+        #         2, 1, 0).unsqueeze(0)
+        #     img_E, img_H = img_E / 255., img_H / 255.
+        #     lpips = lpips_metric(img_E, img_H)
+        #     dists = dists_metric(img_E, img_H)
+        #     niqe = niqe_metric(img_E, img_H)
+        #     musiq = musiq_metric(img_E, img_H)
+        #     maniqa = maniqa_metric(img_E, img_H)
+        #     clipiqa = clipiqa_metric(img_E, img_H)
+        #
+        #     test_results['psnr'].append(psnr)
+        #     test_results['ssim'].append(ssim)
+        #     test_results['psnrb'].append(psnrb)
+        #     test_results['lpips'].append(lpips.item())
+        #     test_results['dists'].append(dists.item())
+        #     test_results['niqe'].append(niqe.item())
+        #     test_results['musiq'].append(musiq.item())
+        #     test_results['maniqa'].append(maniqa.item())
+        #     test_results['clipiqa'].append(clipiqa.item())
+        #
+        # ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
+        # ave_ssim = sum(test_results['ssim']) / len(test_results['ssim'])
+        # ave_psnrb = sum(test_results['psnrb']) / len(test_results['psnrb'])
+        # avg_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
+        # avg_dists = sum(test_results['dists']) / len(test_results['dists'])
+        # avg_niqe = sum(test_results['niqe']) / len(test_results['niqe'])
+        # avg_musiq = sum(test_results['musiq']) / len(test_results['musiq'])
+        # avg_maniqa = sum(test_results['maniqa']) / len(test_results['maniqa'])
+        # avg_clipiqa = sum(test_results['clipiqa']) / len(test_results['clipiqa'])
+        #
+        # print(
+        #     'Average PSNR/SSIM/PSNRB/LPIPIS/DISTS/NIQE/MUSIQ/MANIQA/CLIPIQA - {} -: {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}'.format(
+        #         str(quality_factor), ave_psnr, ave_ssim, ave_psnrb, avg_lpips, avg_dists, avg_niqe,
+        #         avg_musiq, avg_maniqa, avg_clipiqa))
+        #
+        # print(quality_factor, ave_psnr, ave_ssim, ave_psnrb, avg_lpips, avg_dists, avg_niqe, avg_musiq, avg_maniqa,
+        #       avg_clipiqa, sep=',', end='\n', file=f)
 
-            img_H = np.array(img_H)
-            img_E = np.array(img_E)
-
-            psnr = utils.calculate_psnr(img_E, img_H, border=0)
-            # print(psnr)
-            ####
-            # new_img_E = model.guided_forward(lq, prompt=validation_prompt, hq=hq, loss_type='mse', alpha=0.005, bp=3, qf=quality_factor)
-            # new_img_E = transforms.ToPILImage()(new_img_E[0].cpu() * 0.5 + 0.5)
-            # if args.align_method == 'adain':
-            #     new_img_E = adain_color_fix(target=new_img_E, source=img_L)
-            # elif args.align_method == 'wavelet':
-            #     new_img_E = wavelet_color_fix(target=new_img_E, source=img_L)
-            # else:
-            #     pass
-            # new_img_E = np.array(new_img_E)
-            # new_psnr = utils.calculate_psnr(new_img_E, np.array(img_H), border=0)
-            # print(f'{img}: {psnr}->{new_psnr}')
-
-            # ####
-
-            ssim = utils.calculate_ssim(img_E, img_H, border=0)
-            psnrb = utils.calculate_psnrb(img_H, img_E, border=0)
-
-            utils.imsave(img_E, os.path.join(args.output_dir, str(quality_factor), img_name + '.png'))
-            # utils.imsave(img_L, os.path.join(args.output_dir, str(quality_factor)+'_ori', img_name + '.png'))
-
-            img_E, img_H = torch.tensor(img_E, device=device).permute(2, 0, 1).unsqueeze(0), torch.tensor(img_H,
-                                                                                                          device=device).permute(
-                2, 0, 1).unsqueeze(0)
-            img_E, img_H = img_E / 255., img_H / 255.
-            lpips = lpips_metric(img_E, img_H)
-            dists = dists_metric(img_E, img_H)
-            niqe = niqe_metric(img_E, img_H)
-            musiq = musiq_metric(img_E, img_H)
-            maniqa = maniqa_metric(img_E, img_H)
-            clipiqa = clipiqa_metric(img_E, img_H)
-
-            test_results['psnr'].append(psnr)
-            test_results['ssim'].append(ssim)
-            test_results['psnrb'].append(psnrb)
-            test_results['lpips'].append(lpips.item())
-            test_results['dists'].append(dists.item())
-            test_results['niqe'].append(niqe.item())
-            test_results['musiq'].append(musiq.item())
-            test_results['maniqa'].append(maniqa.item())
-            test_results['clipiqa'].append(clipiqa.item())
-
-        ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
-        ave_ssim = sum(test_results['ssim']) / len(test_results['ssim'])
-        ave_psnrb = sum(test_results['psnrb']) / len(test_results['psnrb'])
-        avg_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
-        avg_dists = sum(test_results['dists']) / len(test_results['dists'])
-        avg_niqe = sum(test_results['niqe']) / len(test_results['niqe'])
-        avg_musiq = sum(test_results['musiq']) / len(test_results['musiq'])
-        avg_maniqa = sum(test_results['maniqa']) / len(test_results['maniqa'])
-        avg_clipiqa = sum(test_results['clipiqa']) / len(test_results['clipiqa'])
-
-        print(
-            'Average PSNR/SSIM/PSNRB/LPIPIS/DISTS/NIQE/MUSIQ/MANIQA/CLIPIQA - {} -: {:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}/{:.4f}'.format(
-                str(quality_factor), ave_psnr, ave_ssim, ave_psnrb, avg_lpips, avg_dists, avg_niqe,
-                avg_musiq, avg_maniqa, avg_clipiqa))
-
-        print(quality_factor, ave_psnr, ave_ssim, ave_psnrb, avg_lpips, avg_dists, avg_niqe, avg_musiq, avg_maniqa,
-              avg_clipiqa, sep=',', end='\n', file=f)
-
-    f.close()
+    # f.close()

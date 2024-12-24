@@ -13,8 +13,11 @@ from diffusers import DDPMScheduler
 from models.autoencoder_kl import AutoencoderKL
 from models.unet_2d_condition import UNet2DConditionModel
 from peft import LoraConfig
-
+import cv2
+import torchvision.models as models
+import pyiqa
 from my_utils.vaehook import VAEHook, perfcount
+from my_utils.jpeg_torch import jpeg_encode
 
 
 def initialize_vae(args):
@@ -391,19 +394,21 @@ class OSEDiff_test(torch.nn.Module):
     # @perfcount
     @torch.no_grad()
     def forward(self, lq, prompt):
-
         prompt_embeds = self.encode_prompt([prompt])
         lq_latent = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample() * self.vae.config.scaling_factor
+
+        # breakpoint()
         ## add tile function
         _, _, h, w = lq_latent.size()
         # breakpoint()
         tile_size, tile_overlap = (self.args.latent_tiled_size, self.args.latent_tiled_overlap)
+        # breakpoint()
         if h * w <= tile_size * tile_size:
             # print(f"[Tiled Latent]: the input size is tiny and unnecessary to tile.")
             model_pred = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds).sample
         else:
             print(f"[Tiled Latent]: the input size is {lq.shape[-2]}x{lq.shape[-1]}, need to tiled")
-            tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
+            # tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
             tile_size = min(tile_size, min(h, w))
             tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
 
@@ -482,6 +487,83 @@ class OSEDiff_test(torch.nn.Module):
         x_denoised = self.noise_scheduler.step(model_pred, self.timesteps, lq_latent, return_dict=True).prev_sample
         output_image = (self.vae.decode(x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor).sample).clamp(-1, 1)
 
+        return output_image
+
+    def guided_forward(self, lq, prompt, hq, loss_type, alpha=0.005, bp=1, qf=None):
+        # hq can be anything, lq image, hq image, decoded image from fbcnn, etc.
+        prompt_embeds = self.encode_prompt([prompt])
+        lq_latent = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample() * self.vae.config.scaling_factor
+
+        _, _, h, w = lq_latent.size()
+
+        hq_img = (hq * 0.5 + 0.5) * 255.
+        hq_img = hq_img[0].permute(1, 2, 0)
+        hq_img = hq_img.cpu().numpy()
+        hq_img = cv2.cvtColor(hq_img, cv2.COLOR_BGR2GRAY)
+
+        with torch.no_grad():
+            model_pred = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds).sample
+            x_denoised = self.noise_scheduler.step(model_pred, self.timesteps, lq_latent, return_dict=True).prev_sample
+
+        sobel_x = cv2.Sobel(hq_img, cv2.CV_64F, 1, 0, ksize=3)
+        sobel_y = cv2.Sobel(hq_img, cv2.CV_64F, 0, 1, ksize=3)
+        sobel_magnitude = cv2.magnitude(sobel_x, sobel_y)
+        sobel_magnitude = torch.tensor(sobel_magnitude, device=lq.device).unsqueeze(0).unsqueeze(0)
+        sobel_magnitude /= torch.max(sobel_magnitude)
+        # if loss_type == 'dists':
+        #     dists_metric = pyiqa.create_metric('dists', device=hq.device, as_loss=True, loss_reduction='sum')
+        # elif loss_type == 'ssim':
+        #     dists_metric = pyiqa.create_metric('ssim', device=hq.device, as_loss=True, loss_reduction='sum')
+
+        for _ in range(bp):
+            x_denoised.requires_grad = True
+            x_denoised.retain_grad()
+            output_image = self.vae.decode(x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor, return_dict=False)[0].clamp(-1, 1)
+            # output_image.retain_grad()
+            output_image = output_image.float()
+            if loss_type == 'mse':
+                # loss = ((1 - sobel_magnitude) * (output_image - hq) ** 2).sum()
+                loss = (sobel_magnitude * (output_image - hq) ** 2).sum()
+                # loss = ((output_image - hq) ** 2).sum()
+            elif loss_type == 'mse+dft':
+                src = (output_image * 0.5 + 0.5) * 255.
+                tgt = (hq * 0.5 + 0.5) * 255.
+
+                src_luma_rounded, src_chroma_rounded = jpeg_encode(src.detach(), qf=qf)
+                src_luma, src_chroma = jpeg_encode(src, qf=qf, rounded=False)
+                tgt_luma_rounded, tgt_chroma_rounded = jpeg_encode(tgt, qf=100)
+
+                unfold = nn.Unfold(kernel_size=(8, 8), stride=(8, 8))
+                fold = nn.Fold(output_size=(output_image.shape[-2], output_image.shape[-1]), kernel_size=(8, 8), stride=(8, 8))
+                patches_sobel_magnitude = unfold(sobel_magnitude)
+                patches_sobel_magnitude = patches_sobel_magnitude / (patches_sobel_magnitude.sum(dim=1, keepdim=True) + 1e-6)
+                patches_sobel_magnitude = fold(patches_sobel_magnitude)
+
+                # loss_luma = ((1 - patches_sobel_magnitude) * (src_luma + (src_luma_rounded - src_luma).detach() - tgt_luma_rounded) ** 2).mean()
+                # loss_chroma = ((1 - patches_sobel_magnitude[:, :, ::2, ::2]) * (src_chroma + (src_chroma_rounded - src_chroma).detach() - tgt_chroma_rounded) ** 2).mean()
+                loss_luma = ((src_luma + (src_luma_rounded - src_luma).detach() - tgt_luma_rounded) ** 2).mean()
+                loss_chroma = ((src_chroma + (src_chroma_rounded - src_chroma).detach() - tgt_chroma_rounded) ** 2).mean()
+                # loss_mse = ((1 - sobel_magnitude) * (output_image - hq) ** 2).sum()
+
+                loss = loss_luma + loss_chroma
+
+            # elif loss_type == 'vgg':
+            #     vgg16 = models.vgg16(pretrained=True).features.to(output_image.device)
+            #     vgg16.eval()
+            #     x_vgg = vgg16(output_image)
+            #     y_vgg = vgg16(hq)
+            #     loss = nn.functional.mse_loss(x_vgg, y_vgg)
+            # elif loss_type in ['dists', 'ssim']:
+            #     loss = dists_metric(output_image * 0.5 + 0.5, hq * 0.5 + 0.5)
+            else:
+                raise NotImplementedError
+
+            loss.backward()
+            x_denoised = (x_denoised - x_denoised.grad * alpha).detach()
+
+        with torch.no_grad():
+            output_image = (
+                self.vae.decode(x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor).sample).clamp(-1, 1)
         return output_image
 
     def _init_tiled_vae(self,

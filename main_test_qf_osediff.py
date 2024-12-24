@@ -14,7 +14,7 @@ from PIL import Image
 import cv2
 from collections import OrderedDict
 
-from diffusion.osediff import OSEDiff_test
+from diffusion.qf_osediff import QF_OSEDiff_test
 from diffusion.my_utils.wavelet_color_fix import adain_color_fix, wavelet_color_fix
 
 from ram.models.ram_lora import ram
@@ -58,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--upscale", type=int, default=4)
     parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='adain')
     parser.add_argument("--osediff_path", type=str, default='preset/models/osediff.pkl')
+    parser.add_argument('--qf_encoder_path', required=True)
     parser.add_argument('--prompt', type=str, default='', help='user prompts')
     parser.add_argument('--ram_path', type=str, default=None)
     parser.add_argument('--ram_ft_path', type=str, default=None)
@@ -76,7 +77,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     # initialize the model
-    model = OSEDiff_test(args)
+    model = QF_OSEDiff_test(args)
 
     # get ram model
     DAPE = ram(pretrained=args.ram_path,
@@ -171,8 +172,9 @@ if __name__ == "__main__":
             # _, hq = get_validation_prompt(args, img_blur, DAPE)
 
             hq = hq * 2 - 1
+            # qf_gt = torch.tensor([(100 - quality_factor) / 100.0] * lq.shape[0], device=lq.device).unsqueeze(-1)
             img_E = model.guided_forward(lq, prompt=validation_prompt, hq=hq, loss_type='mse', alpha=0.005, bp=3, qf=quality_factor)
-            # img_E = model(lq, prompt=validation_prompt)
+            # img_E = model(lq, prompt=validation_prompt, qf=qf_gt)
 
             img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
             if args.align_method == 'adain':

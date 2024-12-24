@@ -4,7 +4,7 @@
     "train": {
       "name": "train_dataset"           // just name
       , "dataset_type": "jpeg"         // "jpeg" | "jpeggray" | "jpeggraydouble"
-      , "dataroot_H": ["/data/dataset/CAR/DIV2K/HR", "/data/dataset/CAR/Flickr2K", "/data/dataset/CAR/LSDIR/HR"]// path of original training dataset , "/data/dataset/CAR/LSDIR/HR"
+      , "dataroot_H": ["/data/dataset/CAR/DIV2K/HR", "/data/dataset/CAR/Flickr2K"]// path of original training dataset , "/data/dataset/CAR/LSDIR/HR"
       , "dataroot_L": null            // path of L training dataset
       , "H_size": 256                 // patch size 40 | 64 | 96 | 128 | 192
       , "dataloader_shuffle": true

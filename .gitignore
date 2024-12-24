@@ -11,3 +11,4 @@ wandb/*
 log_tmp/*
 diffusion/preset
 test_results/
+*.csv

@@ -26,7 +26,7 @@ class DatasetJPEG(data.Dataset):
             for root in opt['dataroot_H']:
                 self.paths_H.extend(util.get_image_paths(root))
         else:
-            self.paths_H = util.get_image_paths(opt['dataroot_H'])
+            self.paths_H = util.get_image_paths(opt['dataroot_H'][0])
         self.normalize = normalize
 
     def __getitem__(self, index):
@@ -82,6 +82,7 @@ class DatasetJPEG(data.Dataset):
                 quality_factor = random.randint(8, 96)
             else:
                 quality_factor = random.choice([10,20,30,40,50,60])
+            # quality_factor = random.choice([1, 5, 10, 20, 30, 40])
 
             noise_level = (100-quality_factor)/100.0
             img_L = cv2.cvtColor(img_L, cv2.COLOR_RGB2BGR)

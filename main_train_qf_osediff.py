@@ -20,7 +20,8 @@ import diffusers
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.optimization import get_scheduler
 
-from diffusion.osediff import OSEDiff_reg, OSEDiff_gen
+# from diffusion.osediff import OSEDiff_reg, OSEDiff_gen
+from diffusion.qf_osediff import QF_OSEDiff
 
 from pathlib import Path
 from accelerate.utils import set_seed, ProjectConfiguration
@@ -148,12 +149,14 @@ def parse_args(input_args=None):
     parser.add_argument('--ram_ft_path', type=str, default=None)
 
     # dataset setting
-    parser.add_argument("--datasets", default='options/train_diff_color.json')
+    parser.add_argument("--datasets", default='options/train_qf_osediff.json')
 
     parser.add_argument('--prompt', type=str, default='', help='user prompts')
 
     parser.add_argument('--val_path', required=True)
     parser.add_argument("--align_method", type=str, choices=['wavelet', 'adain', 'nofix'], default='adain')
+
+    parser.add_argument('--osediff_path')
 
     parser.add_argument('--train_decoder', action='store_true')
 
@@ -199,45 +202,52 @@ def main(args):
             wandb.init(project="diff-car", name=args.tracker_project_name)
         # os.makedirs(os.path.join(args.output_dir, "eval"), exist_ok=True)
 
-    model_gen = OSEDiff_gen(args)
-    model_gen.set_train()
-    model_reg = OSEDiff_reg(args=args, accelerator=accelerator)
-    model_reg.set_train()
+    # model_gen = OSEDiff_gen(args)
+    # model_gen.set_train()
+    # model_reg = OSEDiff_reg(args=args, accelerator=accelerator)
+    # model_reg.set_train()
+    model = QF_OSEDiff(args)
+    model.set_train()
 
-    net_lpips = lpips.LPIPS(net='vgg').cuda()
-    net_lpips.requires_grad_(False)
+    # net_lpips = lpips.LPIPS(net='vgg').cuda()
+    # net_lpips.requires_grad_(False)
 
     # set vae adapter
-    model_gen.vae.set_adapter(['default_encoder'])
+    # model_gen.vae.set_adapter(['default_encoder'])
     # set gen adapter
-    model_gen.unet.set_adapter(['default_encoder', 'default_decoder', 'default_others'])
+    # model_gen.unet.set_adapter(['default_encoder', 'default_decoder', 'default_others'])
 
-    if args.enable_xformers_memory_efficient_attention:
-        if is_xformers_available():
-            model_gen.unet.enable_xformers_memory_efficient_attention()
-            model_reg.unet_fix.enable_xformers_memory_efficient_attention()
-            model_reg.unet_update.enable_xformers_memory_efficient_attention()
-        else:
-            raise ValueError("xformers is not available, please install it by running `pip install xformers`")
+    # if args.enable_xformers_memory_efficient_attention:
+    #     if is_xformers_available():
+            # model.unet.enable_xformers_memory_efficient_attention()
+            # model_gen.unet.enable_xformers_memory_efficient_attention()
+            # model_reg.unet_fix.enable_xformers_memory_efficient_attention()
+            # model_reg.unet_update.enable_xformers_memory_efficient_attention()
+        # else:
+        #     raise ValueError("xformers is not available, please install it by running `pip install xformers`")
 
-    if args.gradient_checkpointing:
-        model_gen.unet.enable_gradient_checkpointing()
-        model_reg.unet_fix.enable_gradient_checkpointing()
-        model_reg.unet_update.enable_gradient_checkpointing()
+    # if args.gradient_checkpointing:
+    #     model.
+    #     model_gen.unet.enable_gradient_checkpointing()
+    #     model_reg.unet_fix.enable_gradient_checkpointing()
+    #     model_reg.unet_update.enable_gradient_checkpointing()
 
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
     # make the optimizer
-    layers_to_opt = []
-    for n, _p in model_gen.unet.named_parameters():
-        if "lora" in n:
-            layers_to_opt.append(_p)
-    layers_to_opt += list(model_gen.unet.conv_in.parameters())
-    for n, _p in model_gen.vae.named_parameters():
-        if "lora" in n:
-            layers_to_opt.append(_p)
+    # layers_to_opt = []
+    # for n, _p in model_gen.unet.named_parameters():
+    #     if "lora" in n:
+    #         layers_to_opt.append(_p)
+    # layers_to_opt += list(model_gen.unet.conv_in.parameters())
+    # for n, _p in model_gen.vae.named_parameters():
+    #     if "lora" in n:
+    #         layers_to_opt.append(_p)
 
+    layers_to_opt = []
+    for n, _p in model.qf_encoder.named_parameters():
+        layers_to_opt.append(_p)
     optimizer = torch.optim.AdamW(layers_to_opt, lr=args.learning_rate,
                                   betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay,
                                   eps=args.adam_epsilon, )
@@ -246,17 +256,17 @@ def main(args):
                                  num_training_steps=args.max_train_steps,
                                  num_cycles=args.lr_num_cycles, power=args.lr_power, )
 
-    layers_to_opt_reg = []
-    for n, _p in model_reg.unet_update.named_parameters():
-        if "lora" in n:
-            layers_to_opt_reg.append(_p)
-    optimizer_reg = torch.optim.AdamW(layers_to_opt_reg, lr=args.learning_rate,
-                                      betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay,
-                                      eps=args.adam_epsilon, )
-    lr_scheduler_reg = get_scheduler(args.lr_scheduler, optimizer=optimizer_reg,
-                                     num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-                                     num_training_steps=args.max_train_steps,
-                                     num_cycles=args.lr_num_cycles, power=args.lr_power)
+    # layers_to_opt_reg = []
+    # for n, _p in model_reg.unet_update.named_parameters():
+    #     if "lora" in n:
+    #         layers_to_opt_reg.append(_p)
+    # optimizer_reg = torch.optim.AdamW(layers_to_opt_reg, lr=args.learning_rate,
+    #                                   betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay,
+    #                                   eps=args.adam_epsilon, )
+    # lr_scheduler_reg = get_scheduler(args.lr_scheduler, optimizer=optimizer_reg,
+    #                                  num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
+    #                                  num_training_steps=args.max_train_steps,
+    #                                  num_cycles=args.lr_num_cycles, power=args.lr_power)
 
     # dataset_type = args.dataset_type
     args.datasets = option.parse_dataset(args.datasets)['datasets']
@@ -305,10 +315,10 @@ def main(args):
     model_vlm.to("cuda", dtype=torch.float16)
 
     # Prepare everything with our `accelerator`.
-    model_gen, model_reg, optimizer, optimizer_reg, dl_train, lr_scheduler, lr_scheduler_reg = accelerator.prepare(
-        model_gen, model_reg, optimizer, optimizer_reg, dl_train, lr_scheduler, lr_scheduler_reg
+    model, optimizer, dl_train, lr_scheduler = accelerator.prepare(
+        model, optimizer, dl_train, lr_scheduler
     )
-    net_lpips = accelerator.prepare(net_lpips)
+    # net_lpips = accelerator.prepare(net_lpips)
     # renorm with image net statistics
     weight_dtype = torch.float32
     if accelerator.mixed_precision == "fp16":
@@ -332,12 +342,12 @@ def main(args):
     global_step = 0
     for epoch in range(0, args.num_training_epochs):
         for step, batch in enumerate(dl_train):
-            m_acc = [model_gen, model_reg]
+            m_acc = [model]
             with accelerator.accumulate(*m_acc):
                 x_src = batch["L"].to("cuda")
                 x_tgt = batch["H"].to("cuda")
 
-                qf_gt = batch['qf'].to("cuda").squeeze()
+                qf_gt = batch['qf'].to("cuda")
                 B, C, H, W = x_src.shape
                 # get text prompts from GT
                 x_tgt_ram = ram_transforms(x_tgt * 0.5 + 0.5)
@@ -345,25 +355,27 @@ def main(args):
                 batch["prompt"] = [f'{each_caption}' for each_caption in caption]
                 batch["neg_prompt"] = [args.neg_prompt] * len(batch["prompt"])
                 # forward pass
-                x_tgt_pred, latents_pred, prompt_embeds, neg_prompt_embeds = model_gen(x_src, batch=batch, args=args)
+                x_tgt_pred, latents_pred, prompt_embeds, neg_prompt_embeds = model(x_src, batch=batch, qf=qf_gt)
                 # Reconstruction loss
                 loss_l2 = F.mse_loss(x_tgt_pred.float(), x_tgt.float(), reduction="mean") * args.lambda_l2
-                loss_lpips = net_lpips(x_tgt_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
-                loss = loss_l2 + loss_lpips
+                # loss_lpips = net_lpips(x_tgt_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
+                # loss = loss_l2 + loss_lpips
+                loss = loss_l2
                 # breakpoint()
-                # KL loss
-                loss_kl = 0
-                if not args.no_vsd:
-                    if torch.cuda.device_count() > 1:
-                        loss_kl = model_reg.module.distribution_matching_loss(latents=latents_pred,
-                                                                              prompt_embeds=prompt_embeds,
-                                                                              neg_prompt_embeds=neg_prompt_embeds,
-                                                                              args=args) * args.lambda_vsd
-                    else:
-                        loss_kl = model_reg.distribution_matching_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
-                                                                       neg_prompt_embeds=neg_prompt_embeds,
-                                                                       args=args) * args.lambda_vsd
-                loss = loss + loss_kl
+                # # KL loss
+                # loss_kl = 0
+                # if not args.no_vsd:
+                #     if torch.cuda.device_count() > 1:
+                #         loss_kl = model_reg.module.distribution_matching_loss(latents=latents_pred,
+                #                                                               prompt_embeds=prompt_embeds,
+                #                                                               neg_prompt_embeds=neg_prompt_embeds,
+                #                                                               args=args) * args.lambda_vsd
+                #     else:
+                #         loss_kl = model_reg.distribution_matching_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
+                #                                                        neg_prompt_embeds=neg_prompt_embeds,
+                #                                                        args=args) * args.lambda_vsd
+                # loss = loss + loss_kl
+
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(layers_to_opt, args.max_grad_norm)
@@ -371,23 +383,23 @@ def main(args):
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
 
-                """
-                diff loss: let lora model closed to generator
-                """
-                loss_d = 0
-                if not args.no_vsd:
-                    if torch.cuda.device_count() > 1:
-                        loss_d = model_reg.module.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
-                                                            args=args) * args.lambda_vsd_lora
-                    else:
-                        loss_d = model_reg.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
-                                                     args=args) * args.lambda_vsd_lora
-                    accelerator.backward(loss_d)
-                    if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(model_reg.parameters(), args.max_grad_norm)
-                    optimizer_reg.step()
-                    lr_scheduler_reg.step()
-                    optimizer_reg.zero_grad(set_to_none=args.set_grads_to_none)
+                # """
+                # diff loss: let lora model closed to generator
+                # """
+                # loss_d = 0
+                # if not args.no_vsd:
+                #     if torch.cuda.device_count() > 1:
+                #         loss_d = model_reg.module.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
+                #                                             args=args) * args.lambda_vsd_lora
+                #     else:
+                #         loss_d = model_reg.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
+                #                                      args=args) * args.lambda_vsd_lora
+                #     accelerator.backward(loss_d)
+                #     if accelerator.sync_gradients:
+                #         accelerator.clip_grad_norm_(model_reg.parameters(), args.max_grad_norm)
+                #     optimizer_reg.step()
+                #     lr_scheduler_reg.step()
+                #     optimizer_reg.zero_grad(set_to_none=args.set_grads_to_none)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -398,31 +410,31 @@ def main(args):
 
                     logs = {}
                     # log all the losses
-                    logs["loss_d"] = loss_d.detach().item() if not args.no_vsd else 0
-                    logs["loss_kl"] = loss_kl.detach().item() if not args.no_vsd else 0
+                    # logs["loss_d"] = loss_d.detach().item() if not args.no_vsd else 0
+                    # logs["loss_kl"] = loss_kl.detach().item() if not args.no_vsd else 0
                     logs["loss_l2"] = loss_l2.detach().item()
-                    logs["loss_lpips"] = loss_lpips.detach().item()
+                    # logs["loss_lpips"] = loss_lpips.detach().item()
                     progress_bar.set_postfix(**logs)
                     if not args.debug:
-                        wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips'],
-                                   'loss_d': logs["loss_d"], 'loss_kl': logs["loss_kl"]})
+                        # wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips']})
+                        wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"]})
 
                     # checkpoint the model
                     if global_step % args.checkpointing_steps == 1:
                         # outf = os.path.join(args.tracker_project_name, "checkpoints", f"model_{global_step}.pkl")
                         outf = os.path.join(args.tracker_project_name, "checkpoints", f"model.pkl")
-                        accelerator.unwrap_model(model_gen).save_model(outf)
+                        accelerator.unwrap_model(model).save_model(outf)
 
                     accelerator.log(logs, step=global_step)
 
                     if global_step == args.max_train_steps:
-                        accelerator.unwrap_model(model_gen).save_model(os.path.join(args.tracker_project_name, "checkpoints", f"model_max_train_steps.pkl"))
+                        accelerator.unwrap_model(model).save_model(os.path.join(args.tracker_project_name, "checkpoints", f"model_max_train_steps.pkl"))
 
         if epoch % args.test_epoch == 0:
             if torch.cuda.device_count() > 1:
-                model_gen.module.set_eval()
+                model.module.set_eval()
             else:
-                model_gen.set_eval()
+                model.set_eval()
 
             H_paths = util.get_image_paths(args.val_path)
 
@@ -460,10 +472,11 @@ def main(args):
                 # translate the image
                 with torch.no_grad():
                     lq = lq * 2 - 1
+                    qf_gt = torch.tensor([(100-quality_factor)/100.0] * lq.shape[0], device=lq.device).unsqueeze(-1)
                     if torch.cuda.device_count() > 1:
-                        img_E = model_gen.module.eval(lq, prompt=validation_prompt)
+                        img_E = model.module.eval(lq, prompt=validation_prompt, qf=qf_gt)
                     else:
-                        img_E = model_gen.eval(lq, prompt=validation_prompt)
+                        img_E = model.eval(lq, prompt=validation_prompt, qf=qf_gt)
                     img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
                     if args.align_method == 'adain':
                         img_E = adain_color_fix(target=img_E, source=img_L)
@@ -493,9 +506,9 @@ def main(args):
                 wandb.log({'PSNR': ave_psnr, 'SSIM': ave_ssim, 'PSNRB': ave_psnrb})
 
             if torch.cuda.device_count() > 1:
-                model_gen.module.set_train()
+                model.module.set_train()
             else:
-                model_gen.set_train()
+                model.set_train()
 
 if __name__ == "__main__":
     # from diffusers import DiffusionPipeline

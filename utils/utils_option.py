@@ -58,10 +58,10 @@ def parse(opt_path, is_train=True):
         dataset['phase'] = phase
         dataset['scale'] = opt['scale']  # broadcast
         dataset['n_channels'] = opt['n_channels']  # broadcast
-        if 'dataroot_H' in dataset and dataset['dataroot_H'] is not None:
-            dataset['dataroot_H'] = os.path.expanduser(dataset['dataroot_H'])
-        if 'dataroot_L' in dataset and dataset['dataroot_L'] is not None:
-            dataset['dataroot_L'] = os.path.expanduser(dataset['dataroot_L'])
+        # if 'dataroot_H' in dataset and dataset['dataroot_H'] is not None:
+        #     dataset['dataroot_H'] = os.path.expanduser(dataset['dataroot_H'])
+        # if 'dataroot_L' in dataset and dataset['dataroot_L'] is not None:
+        #     dataset['dataroot_L'] = os.path.expanduser(dataset['dataroot_L'])
 
     # ----------------------------------------
     # path
@@ -113,10 +113,10 @@ def parse_dataset(opt_path):
         dataset['phase'] = phase
         dataset['scale'] = 1 if 'scale' not in opt else opt['scale']  # broadcast
         dataset['n_channels'] = opt['n_channels']  # broadcast
-        if 'dataroot_H' in dataset and dataset['dataroot_H'] is not None:
-            dataset['dataroot_H'] = os.path.expanduser(dataset['dataroot_H'])
-        if 'dataroot_L' in dataset and dataset['dataroot_L'] is not None:
-            dataset['dataroot_L'] = os.path.expanduser(dataset['dataroot_L'])
+        # if 'dataroot_H' in dataset and dataset['dataroot_H'] is not None:
+        #     dataset['dataroot_H'] = os.path.expanduser(dataset['dataroot_H'])
+        # if 'dataroot_L' in dataset and dataset['dataroot_L'] is not None:
+        #     dataset['dataroot_L'] = os.path.expanduser(dataset['dataroot_L'])
     return opt
 
 def find_last_checkpoint(save_dir, net_type='G'):

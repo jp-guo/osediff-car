@@ -1,5 +1,5 @@
 export CUDA_VISIBLE_DEVICES=4
-python main_test_diff.py \
+python debug.py \
 -i testsets/LIVE1_color \
 -o debug \
 --osediff_path /home/guojinpei/diff-car/training_results/train_diff_512_large_dataset_no_vsd/2024-12-13_22-01-24/checkpoints/model_max_train_steps.pkl \

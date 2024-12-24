@@ -76,7 +76,7 @@ def main(json_path='options/train_fbcnn_color.json'):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
 
-    wandb.init(project="diff-car", name=f'fbcnn_bz_{opt["datasets"]["train"]["dataloader_batch_size"]}_no_QF')
+    wandb.init(project="diff-car", name=f'fbcnn_bz_naive')
     '''
     # ----------------------------------------
     # Step--2 (creat dataloader)

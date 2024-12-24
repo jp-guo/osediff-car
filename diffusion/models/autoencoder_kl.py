@@ -299,6 +299,8 @@ class AutoencoderKL(ModelMixin, ConfigMixin, FromOriginalVAEMixin):
         if self.use_slicing and z.shape[0] > 1:
             decoded_slices = [self._decode(z_slice).sample for z_slice in z.split(1)]
             decoded = torch.cat(decoded_slices)
+        elif not return_dict:
+            decoded = self._decode(z)[0]
         else:
             decoded = self._decode(z).sample
 
