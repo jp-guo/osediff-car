@@ -1,6 +1,6 @@
 export HF_ENDPOINT=https://hf-mirror.com
 
-CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch --main_process_port 12456 main_train_diff.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch main_train_fbcnn_osediff.py \
     --pretrained_model_name_or_path=/data/pretrained/stable-diffusion-2-1-base \
     --ram_path=/data/pretrained/ram_swin_large_14m.pth \
     --val_path=/home/guojinpei/diff-car/testsets/LIVE1_color \
@@ -17,13 +17,5 @@ CUDA_VISIBLE_DEVICES=4,5,6,7 accelerate launch --main_process_port 12456 main_tr
     --lambda_l2=1 \
     --lambda_vsd=1 \
     --lambda_vsd_lora=2 \
-    --tracker_project_name "osediff_no_vsd" \
+    --tracker_project_name "train_fbcnn_osediff" \
     --no_vsd \
-#    --debug \
-#    --train_decoder \
-#    --no_vsd \
-
-#    --dataset_txt_paths_list 'YOUR TXT FILE PATH','YOUR TXT FILE PATH'
-#    --deg_file_path="params_realesrgan.yml"
-#    --dataset_prob_paths_list 1,1 \
-#    --train_batch_size=4 \

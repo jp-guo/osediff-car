@@ -14,7 +14,7 @@ from PIL import Image
 import cv2
 from collections import OrderedDict
 
-from diffusion.osediff import OSEDiff_test
+from diffusion.fbcnn_osediff import OSEDiff_test
 from diffusion.my_utils.wavelet_color_fix import adain_color_fix, wavelet_color_fix
 
 from ram.models.ram_lora import ram
@@ -113,7 +113,7 @@ if __name__ == "__main__":
     clipiqa_metric = pyiqa.create_metric('clipiqa', device=device)
 
     f = open(os.path.join(args.output_dir, 'results.csv'), 'a')
-    for quality_factor in [40]:      # 5, 10, 20, 30, 40
+    for quality_factor in [1, 5, 10, 20, 30, 40]:      # 5, 10, 20, 30, 40
         os.makedirs(os.path.join(args.output_dir, str(quality_factor)), exist_ok=True)
         # os.makedirs(os.path.join(args.output_dir, str(quality_factor)+'_ori'), exist_ok=True)
         test_results = OrderedDict()

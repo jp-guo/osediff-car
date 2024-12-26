@@ -13,14 +13,14 @@ import pyiqa
 
 def main():
     quality_factor_list = [1, 5, 10, 20, 30, 40]    # 5, 10, 20, 30, 40
-    testset_name = 'LIVE1_color'  # 'LIVE1_color' 'BSDS500_color' 'ICB', 'DIV2K_valid'
+    testset_name = 'Urban100'  # 'LIVE1_color' 'BSDS500_color' 'ICB', 'DIV2K_valid'
     n_channels = 3  # set 1 for grayscale image, set 3 for color image
     model_name = 'fbcnn_color.pth'  # '160000_G.pth'
     nc = [64, 128, 256, 512]
     nb = 4
     show_img = False  # default: False
     results = 'test_results'
-    H_path = 'testsets/LIVE1_color'
+    H_path = '/data/dataset/CAR/Urban100'
 
     model_pool = 'model_zoo'  # fixed
     model_path = os.path.join(model_pool, model_name)

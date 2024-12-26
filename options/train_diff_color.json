@@ -13,7 +13,7 @@
     }, "test": {
       "name": "test_dataset"            // just name
       , "dataset_type": "jpeg"         // "jpeg" | "jpeggray" | "jpeggraydouble"
-      , "dataroot_H": ["/home/guojinpei/diff-car/testsets/Classic5"]  // path of H testing dataset
+      , "dataroot_H": ["/home/guojinpei/diff-car/testsets/LIVE1_color"]  // path of H testing dataset
       , "dataroot_L": ""              // path of L testing dataset
     }
   }
