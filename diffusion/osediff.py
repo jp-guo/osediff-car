@@ -396,7 +396,13 @@ class OSEDiff_test(torch.nn.Module):
         prompt_embeds = self.encode_prompt([prompt])
         lq_latent = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample() * self.vae.config.scaling_factor
 
-        # breakpoint()
+        ###
+        # lq_latent = lq_latent.repeat(16, 1, 1, 1)
+        # for i in range(1, len(lq_latent)):
+        #     lq_latent[i] = self.vae.encode(lq.to(self.weight_dtype)).latent_dist.sample() * self.vae.config.scaling_factor
+        # prompt_embeds = prompt_embeds.repeat(16, 1, 1)
+        ###
+
         ## add tile function
         _, _, h, w = lq_latent.size()
         # breakpoint()
@@ -487,7 +493,6 @@ class OSEDiff_test(torch.nn.Module):
         # x_denoised = lq_latent
         # x_denoised = torch.randn_like(lq_latent, device=lq_latent.device)
         output_image = (self.vae.decode(x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor).sample).clamp(-1, 1)
-
         return output_image
 
     def guided_forward(self, lq, prompt, hq, loss_type, alpha=0.005, bp=1, qf=None):

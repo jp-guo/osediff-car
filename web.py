@@ -74,15 +74,18 @@ def serve_image(filename):
 
 if __name__ == '__main__':
     os.makedirs(IMAGE_FOLDER, exist_ok=True)
-    testname = "LIVE1_color"
-    qf = str(10)
-    roots = [os.path.join(f'/home/guojinpei/car-baselines/JDEC/test_results/LIVE1_color', qf),
+    testname = "Urban100"
+    qf = str(5)
+    roots = [os.path.join(f'/home/guojinpei/car-baselines/PromptCIR/test_results/{testname}', qf),
+             os.path.join(f'/home/guojinpei/car-baselines/SUPIR/test_results/{testname}', qf),
+             os.path.join(f'/home/guojinpei/car-baselines/DiffBIR/results/custom_{testname}_{qf}'),
              os.path.join(f'/home/guojinpei/diff-car/test_results/{testname}_OSEDIFF_no_reg', qf),
-             os.path.join(f'/home/guojinpei/diff-car/test_results/{testname}_OSEDIFF_no_reg_gd', qf),
-             os.path.join(f'/home/guojinpei/diff-car/test_results/{testname}_QF_OSEDIFF', qf),
-             os.path.join(f'/home/guojinpei/diff-car/test_results/{testname}_jpeg', qf),
-             f'/home/guojinpei/diff-car/testsets/{testname}']
-    models = ['jdec', 'osediff', 'osediff_gd', 'osediff_control', 'jpeg', 'gt']
+             # os.path.join(f'/home/guojinpei/diff-car/test_results/{testname}_jpeg', qf),
+             # f'/home/guojinpei/diff-car/testsets/{testname}']
+             os.path.join(f'/data/dataset/CAR/{testname}_{qf}'),
+             os.path.join(f'/data/dataset/CAR/{testname}')
+             ]
+    models = ['PromptCIR','SUPIR', 'DiffBIR', 'ours', 'JPEG', 'GT']
     for model, root in zip(models, roots):
         for img in os.listdir(root):
             img_name, ext = os.path.splitext(img)

@@ -14,7 +14,7 @@ from PIL import Image
 import cv2
 from collections import OrderedDict
 
-from diffusion.osediff import OSEDiff_test
+from diffusion.osediff_residual import OSEDiff_test
 from diffusion.my_utils.wavelet_color_fix import adain_color_fix, wavelet_color_fix
 
 from ram.models.ram_lora import ram
@@ -113,7 +113,7 @@ if __name__ == "__main__":
     clipiqa_metric = pyiqa.create_metric('clipiqa', device=device)
 
     f = open(os.path.join(args.output_dir, 'results.csv'), 'a')
-    for quality_factor in [1, 5, 10, 20, 30, 40]:      # 5, 10, 20, 30, 40
+    for quality_factor in [1, 5, 10, 20, 30, 40]:      # 1, 5, 10, 20, 30, 40
         os.makedirs(os.path.join(args.output_dir, str(quality_factor)), exist_ok=True)
         # os.makedirs(os.path.join(args.output_dir, str(quality_factor)+'_ori'), exist_ok=True)
         test_results = OrderedDict()
@@ -152,9 +152,7 @@ if __name__ == "__main__":
             img_L = Image.fromarray(img_L)
             # get caption
             validation_prompt, lq = get_validation_prompt(args, img_L, DAPE)
-            # print(validation_prompt)
-            # validation_prompt = ''
-            # print(validation_prompt)
+
             # translate the image
             lq = lq * 2 - 1
 
@@ -176,9 +174,6 @@ if __name__ == "__main__":
             # img_E = model.guided_forward(lq, prompt=validation_prompt, hq=hq, loss_type='mse', alpha=0.005, bp=3, qf=quality_factor)
             img_E = model(lq, prompt=validation_prompt)
 
-            img_H = np.array(img_H)
-
-            # for img_E in img_Es:
             img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
             if args.align_method == 'adain':
                 img_E = adain_color_fix(target=img_E, source=img_L)
@@ -187,7 +182,9 @@ if __name__ == "__main__":
             else:
                 pass
 
+            img_H = np.array(img_H)
             img_E = np.array(img_E)
+
             psnr = utils.calculate_psnr(img_E, img_H, border=0)
             # print(psnr)
             ####
@@ -211,16 +208,16 @@ if __name__ == "__main__":
             utils.imsave(img_E, os.path.join(args.output_dir, str(quality_factor), img_name + '.png'))
             # utils.imsave(img_L, os.path.join(args.output_dir, str(quality_factor)+'_ori', img_name + '.png'))
 
-            img_E, img_H_tensor = torch.tensor(img_E, device=device).permute(2, 0, 1).unsqueeze(0), torch.tensor(img_H,
+            img_E, img_H = torch.tensor(img_E, device=device).permute(2, 0, 1).unsqueeze(0), torch.tensor(img_H,
                                                                                                           device=device).permute(
                 2, 0, 1).unsqueeze(0)
-            img_E, img_H_tensor = img_E / 255., img_H_tensor / 255.
-            lpips = lpips_metric(img_E, img_H_tensor)
-            dists = dists_metric(img_E, img_H_tensor)
-            niqe = niqe_metric(img_E, img_H_tensor)
-            musiq = musiq_metric(img_E, img_H_tensor)
-            maniqa = maniqa_metric(img_E, img_H_tensor)
-            clipiqa = clipiqa_metric(img_E, img_H_tensor)
+            img_E, img_H = img_E / 255., img_H / 255.
+            lpips = lpips_metric(img_E, img_H)
+            dists = dists_metric(img_E, img_H)
+            niqe = niqe_metric(img_E, img_H)
+            musiq = musiq_metric(img_E, img_H)
+            maniqa = maniqa_metric(img_E, img_H)
+            clipiqa = clipiqa_metric(img_E, img_H)
 
             test_results['psnr'].append(psnr)
             test_results['ssim'].append(ssim)
