@@ -1,6 +1,6 @@
 export HF_ENDPOINT=https://hf-mirror.com
 
-CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 12777 main_train_fbcnn_osediff.py \
+CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 12777 main_train_consistency.py \
     --pretrained_model_name_or_path=/data/pretrained/stable-diffusion-2-1-base \
     --ram_path=/data/pretrained/ram_swin_large_14m.pth \
     --val_path=/home/guojinpei/diff-car/testsets/LIVE1_color \
@@ -15,9 +15,6 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 12777 main_tr
     --lora_rank=16 \
     --lambda_lpips=2 \
     --lambda_l2=1 \
-    --lambda_qf=0.5 \
-    --lambda_vsd=1 \
-    --lambda_vsd_lora=2 \
-    --tracker_project_name "train_fbcnn_osediff_given_qfgt" \
-    --no_vsd \
+    --lambda_discrepancy=0.1 \
+    --tracker_project_name "train_consistency" \
 #    --debug

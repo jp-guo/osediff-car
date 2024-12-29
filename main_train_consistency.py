@@ -4,10 +4,8 @@ import lpips
 import math
 import argparse
 import torch
-from torch import nn
 import torch.nn.functional as F
 import torch.utils.checkpoint
-from pyiqa.archs.musiq_arch import MUSIQ
 from torch.utils.data import DataLoader
 import transformers
 from accelerate import Accelerator
@@ -17,12 +15,12 @@ import numpy as np
 from PIL import Image
 from collections import OrderedDict
 import cv2
-
+import pyiqa
 import diffusers
 from diffusers.utils.import_utils import is_xformers_available
 from diffusers.optimization import get_scheduler
 
-from diffusion.fbcnn_osediff import OSEDiff_reg, OSEDiff_gen
+from diffusion.osediff import OSEDiff_gen
 
 from pathlib import Path
 from accelerate.utils import set_seed, ProjectConfiguration
@@ -34,7 +32,6 @@ from utils import utils_option as option
 
 from main_test_diff import get_validation_prompt
 from diffusion.my_utils.wavelet_color_fix import adain_color_fix, wavelet_color_fix
-import pyiqa
 
 import warnings
 
@@ -89,7 +86,6 @@ def parse_args(input_args=None):
                         help="Number of updates steps to accumulate before performing a backward/update pass.", )
     parser.add_argument("--gradient_checkpointing", action="store_true", )
     parser.add_argument("--learning_rate", type=float, default=5e-5)
-    parser.add_argument('--qf_learning_rate', type=float, default=1e-4)
     parser.add_argument("--lr_scheduler", type=str, default="constant",
                         help=(
                             'The scheduler type to use. Choose between ["linear", "cosine", "cosine_with_restarts", "polynomial",'
@@ -137,13 +133,9 @@ def parse_args(input_args=None):
     parser.add_argument("--pretrained_model_name_or_path", default=None, type=str)
     parser.add_argument("--lambda_l2", default=1.0, type=float)
     parser.add_argument("--lambda_lpips", default=2.0, type=float)
-    parser.add_argument('--lambda_qf', default=0.1, type=float)
-    parser.add_argument("--lambda_vsd", default=1.0, type=float)
-    parser.add_argument("--lambda_vsd_lora", default=1.0, type=float)
+    parser.add_argument('--lambda_discrepancy', default=0.1, type=float)
     parser.add_argument("--neg_prompt", default="", type=str)
-    parser.add_argument("--cfg_vsd", default=7.5, type=float)
 
-    parser.add_argument('--no_vsd', action='store_true')
     parser.add_argument('--test_epoch', type=int, default=1)
 
     # lora setting
@@ -206,8 +198,6 @@ def main(args):
 
     model_gen = OSEDiff_gen(args)
     model_gen.set_train()
-    model_reg = OSEDiff_reg(args=args, accelerator=accelerator)
-    model_reg.set_train()
 
     net_lpips = lpips.LPIPS(net='vgg').cuda()
     net_lpips.requires_grad_(False)
@@ -220,27 +210,20 @@ def main(args):
     if args.enable_xformers_memory_efficient_attention:
         if is_xformers_available():
             model_gen.unet.enable_xformers_memory_efficient_attention()
-            model_reg.unet_fix.enable_xformers_memory_efficient_attention()
-            model_reg.unet_update.enable_xformers_memory_efficient_attention()
         else:
             raise ValueError("xformers is not available, please install it by running `pip install xformers`")
 
     if args.gradient_checkpointing:
         model_gen.unet.enable_gradient_checkpointing()
-        model_reg.unet_fix.enable_gradient_checkpointing()
-        model_reg.unet_update.enable_gradient_checkpointing()
 
     if args.allow_tf32:
         torch.backends.cuda.matmul.allow_tf32 = True
 
     # make the optimizer
     layers_to_opt = []
-    # qf_layers_to_opt = []
     for n, _p in model_gen.unet.named_parameters():
-        if "lora" in n or "qfnet" in n:
+        if "lora" in n:
             layers_to_opt.append(_p)
-        # if "qfnet" in n:
-        #     qf_layers_to_opt.append(_p)
     layers_to_opt += list(model_gen.unet.conv_in.parameters())
     for n, _p in model_gen.vae.named_parameters():
         if "lora" in n:
@@ -249,25 +232,10 @@ def main(args):
     optimizer = torch.optim.AdamW(layers_to_opt, lr=args.learning_rate,
                                   betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay,
                                   eps=args.adam_epsilon, )
-    # qf_optimizer = torch.optim.AdamW(qf_layers_to_opt, lr=args.qf_learning_rate,
-    #                               betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay,
-    #                               eps=args.adam_epsilon, )
     lr_scheduler = get_scheduler(args.lr_scheduler, optimizer=optimizer,
                                  num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
                                  num_training_steps=args.max_train_steps,
                                  num_cycles=args.lr_num_cycles, power=args.lr_power, )
-
-    layers_to_opt_reg = []
-    for n, _p in model_reg.unet_update.named_parameters():
-        if "lora" in n:
-            layers_to_opt_reg.append(_p)
-    optimizer_reg = torch.optim.AdamW(layers_to_opt_reg, lr=args.learning_rate,
-                                      betas=(args.adam_beta1, args.adam_beta2), weight_decay=args.adam_weight_decay,
-                                      eps=args.adam_epsilon, )
-    lr_scheduler_reg = get_scheduler(args.lr_scheduler, optimizer=optimizer_reg,
-                                     num_warmup_steps=args.lr_warmup_steps * accelerator.num_processes,
-                                     num_training_steps=args.max_train_steps,
-                                     num_cycles=args.lr_num_cycles, power=args.lr_power)
 
     # dataset_type = args.dataset_type
     args.datasets = option.parse_dataset(args.datasets)['datasets']
@@ -282,24 +250,7 @@ def main(args):
                                       batch_size=dataset_opt['dataloader_batch_size'],
                                       shuffle=dataset_opt['dataloader_shuffle'],
                                       num_workers=dataset_opt['dataloader_num_workers'],
-                                      drop_last=True,
-                                      pin_memory=True)
-            # args.max_train_steps = len(dl_train) * args.num_training_epochs
-        # elif phase == 'test':
-        #     test_set = define_Dataset(dataset_opt)
-        #     test_set.normalize = True
-        #     # print('Dataset [{:s} - {:s}] is created.'.format(test_set.__class__.__name__, dataset_opt['name']))
-        #     dl_test = DataLoader(test_set, batch_size=1,
-        #                              shuffle=False, num_workers=1,
-        #                              drop_last=False, pin_memory=True)
-        # else:
-        #     raise NotImplementedError("Phase [%s] is not recognized." % phase)
-    # breakpoint()
-    # dataset_train = PairedSROnlineTxtDataset(split="train", args=args)
-    # dataset_val = PairedSROnlineTxtDataset(split="test", args=args)
-    # dl_train = torch.utils.data.DataLoader(dataset_train, batch_size=args.train_batch_size, shuffle=True,
-    #                                        num_workers=args.dataloader_num_workers)
-    # dl_val = torch.utils.data.DataLoader(dataset_val, batch_size=1, shuffle=False, num_workers=0)
+                                      drop_last=True)
 
     # init vlm model
     from ram.models.ram_lora import ram
@@ -316,8 +267,8 @@ def main(args):
     model_vlm.to("cuda", dtype=torch.float16)
 
     # Prepare everything with our `accelerator`.
-    model_gen, model_reg, optimizer, optimizer_reg, dl_train, lr_scheduler, lr_scheduler_reg = accelerator.prepare(
-        model_gen, model_reg, optimizer, optimizer_reg, dl_train, lr_scheduler, lr_scheduler_reg
+    model_gen, optimizer, dl_train, lr_scheduler= accelerator.prepare(
+        model_gen, optimizer, dl_train, lr_scheduler
     )
     net_lpips = accelerator.prepare(net_lpips)
     # renorm with image net statistics
@@ -343,12 +294,12 @@ def main(args):
     global_step = 0
     for epoch in range(0, args.num_training_epochs):
         for step, batch in enumerate(dl_train):
-            m_acc = [model_gen, model_reg]
+            m_acc = [model_gen]
             with accelerator.accumulate(*m_acc):
                 x_src = batch["L"].to("cuda")
                 x_tgt = batch["H"].to("cuda")
 
-                # qf_gt = batch['qf'].to("cuda").squeeze()
+                qf_gt = batch['qf'].to("cuda").squeeze()
                 B, C, H, W = x_src.shape
                 # get text prompts from GT
                 x_tgt_ram = ram_transforms(x_tgt * 0.5 + 0.5)
@@ -356,52 +307,28 @@ def main(args):
                 batch["prompt"] = [f'{each_caption}' for each_caption in caption]
                 batch["neg_prompt"] = [args.neg_prompt] * len(batch["prompt"])
                 # forward pass
-                x_tgt_pred, latents_pred, prompt_embeds, neg_prompt_embeds, qf_pred = model_gen(x_src, batch=batch, args=args)
-                # Reconstruction loss
-                loss_l2 = F.mse_loss(x_tgt_pred.float(), x_tgt.float(), reduction="mean") * args.lambda_l2
-                loss_lpips = net_lpips(x_tgt_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
+                x_lq_pred, lq_latents, _, _ = model_gen(x_src, batch=batch, args=args)
+                x_hq_pred, hq_latents, _, _ = model_gen(x_src, batch=batch, args=args)
+                lq_loss_l2 = F.mse_loss(x_lq_pred.float(), x_tgt.float(), reduction="mean") * args.lambda_l2
+                lq_loss_lpips = net_lpips(x_lq_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
+                hq_loss_l2 = F.mse_loss(x_hq_pred.float(), x_tgt.float(), reduction="mean") * args.lambda_l2
+                hq_loss_lpips = net_lpips(x_hq_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
+                loss_discrepancy = F.mse_loss(lq_latents.float(), hq_latents.float().detach(), reduction="mean") * args.lambda_discrepancy
+                # x_tgt_pred, latents_pred, prompt_embeds, neg_prompt_embeds = model_gen(x_src, batch=batch, args=args)
+                # # Reconstruction loss
+                # loss_l2 = F.mse_loss(x_tgt_pred.float(), x_tgt.float(), reduction="mean") * args.lambda_l2
+                # loss_lpips = net_lpips(x_tgt_pred.float(), x_tgt.float()).mean() * args.lambda_lpips
+                # loss = loss_l2 + loss_lpips
+                loss = lq_loss_l2 + lq_loss_lpips + hq_loss_l2 + hq_loss_lpips + loss_discrepancy
+                # breakpoint()
 
-                # loss_qf = F.l1_loss(qf_pred, qf_gt) * args.lambda_qf
-
-                # loss = loss_l2 + loss_lpips + loss_qf
-                loss = loss_l2 + loss_lpips
-                # KL loss
-                loss_kl = 0
-                if not args.no_vsd:
-                    if torch.cuda.device_count() > 1:
-                        loss_kl = model_reg.module.distribution_matching_loss(latents=latents_pred,
-                                                                              prompt_embeds=prompt_embeds,
-                                                                              neg_prompt_embeds=neg_prompt_embeds,
-                                                                              args=args) * args.lambda_vsd
-                    else:
-                        loss_kl = model_reg.distribution_matching_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
-                                                                       neg_prompt_embeds=neg_prompt_embeds,
-                                                                       args=args) * args.lambda_vsd
-                loss = loss + loss_kl
+                loss = loss
                 accelerator.backward(loss)
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(layers_to_opt, args.max_grad_norm)
                 optimizer.step()
                 lr_scheduler.step()
                 optimizer.zero_grad(set_to_none=args.set_grads_to_none)
-
-                """
-                diff loss: let lora model closed to generator
-                """
-                loss_d = 0
-                if not args.no_vsd:
-                    if torch.cuda.device_count() > 1:
-                        loss_d = model_reg.module.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
-                                                            args=args) * args.lambda_vsd_lora
-                    else:
-                        loss_d = model_reg.diff_loss(latents=latents_pred, prompt_embeds=prompt_embeds,
-                                                     args=args) * args.lambda_vsd_lora
-                    accelerator.backward(loss_d)
-                    if accelerator.sync_gradients:
-                        accelerator.clip_grad_norm_(model_reg.parameters(), args.max_grad_norm)
-                    optimizer_reg.step()
-                    lr_scheduler_reg.step()
-                    optimizer_reg.zero_grad(set_to_none=args.set_grads_to_none)
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -412,19 +339,20 @@ def main(args):
 
                     logs = {}
                     # log all the losses
-                   # logs["loss_d"] = loss_d.detach().item() if not args.no_vsd else 0
-                   # logs["loss_kl"] = loss_kl.detach().item() if not args.no_vsd else 0
-                    logs["loss_l2"] = loss_l2.detach().item()
-                    logs["loss_lpips"] = loss_lpips.detach().item()
-                    # logs['loss_qf'] = loss_qf.detach().item()
+                    logs["lq_loss_l2"] = lq_loss_l2.detach().item()
+                    logs["lq_loss_lpips"] = lq_loss_lpips.detach().item()
+                    logs["hq_loss_l2"] = hq_loss_l2.detach().item()
+                    logs["hq_loss_lpips"] = hq_loss_lpips.detach().item()
+                    logs["loss_discrepancy"] = loss_discrepancy.detach().item()
                     progress_bar.set_postfix(**logs)
                     if not args.debug:
-                        wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips']})
-
-                    # checkpoint the model
+                        # wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips'],
+                        #            'loss_d': logs["loss_d"], 'loss_kl': logs["loss_kl"]})
+                        wandb.log({'epoch': epoch, 'lq_loss_l2': logs["lq_loss_l2"], 'hq_loss_l2': logs['hq_loss_l2'], 'loss_discrepancy': logs['loss_discrepancy']})
+                        # checkpoint the model
                     if global_step % args.checkpointing_steps == 1:
-                        # outf = os.path.join(args.tracker_project_name, "checkpoints", f"model_{global_step}.pkl")
-                        outf = os.path.join(args.tracker_project_name, "checkpoints", f"model.pkl")
+                        outf = os.path.join(args.tracker_project_name, "checkpoints", f"model_{global_step}.pkl")
+                        # outf = os.path.join(args.tracker_project_name, "checkpoints", f"model.pkl")
                         accelerator.unwrap_model(model_gen).save_model(outf)
 
                     accelerator.log(logs, step=global_step)
@@ -459,97 +387,98 @@ def main(args):
             test_results['maniqa'] = []
             test_results['clipiqa'] = []
 
-        for idx, img in tqdm(enumerate(H_paths)):
-            img_name, ext = os.path.splitext(os.path.basename(img))
+            for idx, img in tqdm(enumerate(H_paths)):
+                img_name, ext = os.path.splitext(os.path.basename(img))
 
-            img_H = Image.open(img).convert('RGB')
+                img_H = Image.open(img).convert('RGB')
 
-            # vae can only process images with height and width multiples of 8
-            new_width = img_H.width - img_H.width % 8
-            new_height = img_H.height - img_H.height % 8
-            img_H = img_H.resize((new_width, new_height), Image.LANCZOS)
+                # vae can only process images with height and width multiples of 8
+                new_width = img_H.width - img_H.width % 8
+                new_height = img_H.height - img_H.height % 8
+                img_H = img_H.resize((new_width, new_height), Image.LANCZOS)
 
-            img_L = img_H.copy()
+                img_L = img_H.copy()
 
-            # img_L = utils.imread_uint(img, n_channels=n_channels)
-            img_L = np.array(img_L)
-            n_channels = img_L.shape[-1]
-            if n_channels == 3:
-                img_L = cv2.cvtColor(img_L, cv2.COLOR_RGB2BGR)
-            _, encimg = cv2.imencode('.jpg', img_L, [int(cv2.IMWRITE_JPEG_QUALITY), quality_factor])
-            img_L = cv2.imdecode(encimg, 0) if n_channels == 1 else cv2.imdecode(encimg, 3)
-            if n_channels == 3:
-                img_L = cv2.cvtColor(img_L, cv2.COLOR_BGR2RGB)
+                # img_L = utils.imread_uint(img, n_channels=n_channels)
+                img_L = np.array(img_L)
+                n_channels = img_L.shape[-1]
+                if n_channels == 3:
+                    img_L = cv2.cvtColor(img_L, cv2.COLOR_RGB2BGR)
+                _, encimg = cv2.imencode('.jpg', img_L, [int(cv2.IMWRITE_JPEG_QUALITY), quality_factor])
+                img_L = cv2.imdecode(encimg, 0) if n_channels == 1 else cv2.imdecode(encimg, 3)
+                if n_channels == 3:
+                    img_L = cv2.cvtColor(img_L, cv2.COLOR_BGR2RGB)
 
-            img_L = Image.fromarray(img_L)
-            # get caption
-            # validation_prompt, lq = get_validation_prompt(args, img_L, DAPE)
-            validation_prompt, lq = get_validation_prompt(args, img_L, model_vlm)
-            # translate the image
-            with torch.no_grad():
-                lq = lq * 2 - 1
-                if torch.cuda.device_count() > 1:
-                    img_E = model_gen.module.eval(lq, prompt=validation_prompt, qf_gt=torch.zeros(lq.shape[0], 1, device=lq.device) + (100-quality_factor)/100.0)
-                else:
-                    img_E = model_gen.eval(lq, prompt=validation_prompt, qf_gt=torch.zeros(lq.shape[0], 1, device=lq.device) + (100-quality_factor)/100.0)
-                img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
-                if args.align_method == 'adain':
-                    img_E = adain_color_fix(target=img_E, source=img_L)
-                elif args.align_method == 'wavelet':
-                    img_E = wavelet_color_fix(target=img_E, source=img_L)
-                else:
-                    pass
-            img_H = np.array(img_H)
-            img_E = np.array(img_E)
+                img_L = Image.fromarray(img_L)
+                # get caption
+                # validation_prompt, lq = get_validation_prompt(args, img_L, DAPE)
+                validation_prompt, lq = get_validation_prompt(args, img_L, model_vlm)
+                # translate the image
+                with torch.no_grad():
+                    lq = lq * 2 - 1
+                    if torch.cuda.device_count() > 1:
+                        img_E = model_gen.module.eval(lq, prompt=validation_prompt)
+                    else:
+                        img_E = model_gen.eval(lq, prompt=validation_prompt)
+                    img_E = transforms.ToPILImage()(img_E[0].cpu() * 0.5 + 0.5)
+                    if args.align_method == 'adain':
+                        img_E = adain_color_fix(target=img_E, source=img_L)
+                    elif args.align_method == 'wavelet':
+                        img_E = wavelet_color_fix(target=img_E, source=img_L)
+                    else:
+                        pass
+                img_H = np.array(img_H)
+                img_E = np.array(img_E)
 
-            psnr = util.calculate_psnr(img_E, img_H, border=0)
-            ssim = util.calculate_ssim(img_E, img_H, border=0)
-            psnrb = util.calculate_psnrb(img_H, img_E, border=0)
+                psnr = util.calculate_psnr(img_E, img_H, border=0)
+                ssim = util.calculate_ssim(img_E, img_H, border=0)
+                psnrb = util.calculate_psnrb(img_H, img_E, border=0)
 
-            util.imsave(img_E, os.path.join(args.tracker_project_name, img_name + '.png'))
+                util.imsave(img_E, os.path.join(args.tracker_project_name, img_name + '.png'))
 
-            img_E, img_H = img_E / 255., img_H / 255.
-            img_E, img_H = torch.tensor(img_E, device="cuda").permute(2, 0, 1).unsqueeze(0), torch.tensor(img_H,
-                                                                                                          device="cuda").permute(
-                2, 0, 1).unsqueeze(0)
-            img_E, img_H = img_E.type(torch.float32), img_H.type(torch.float32)
+                img_E, img_H = img_E / 255., img_H / 255.
+                img_E, img_H = torch.tensor(img_E, device="cuda").permute(2, 0, 1).unsqueeze(0), torch.tensor(img_H,
+                                                                                                              device="cuda").permute(
+                    2, 0, 1).unsqueeze(0)
+                img_E, img_H = img_E.type(torch.float32), img_H.type(torch.float32)
 
-            lpips_score = lpips_metric(img_E, img_H)
-            dists = dists_metric(img_E, img_H)
-            niqe = niqe_metric(img_E, img_H)
-            musiq = musiq_metric(img_E, img_H)
-            maniqa = maniqa_metric(img_E, img_H)
-            clipiqa = clipiqa_metric(img_E, img_H)
+                lpips_score = lpips_metric(img_E, img_H)
+                dists = dists_metric(img_E, img_H)
+                niqe = niqe_metric(img_E, img_H)
+                musiq = musiq_metric(img_E, img_H)
+                maniqa = maniqa_metric(img_E, img_H)
+                clipiqa = clipiqa_metric(img_E, img_H)
 
-            test_results['psnr'].append(psnr)
-            test_results['ssim'].append(ssim)
-            test_results['psnrb'].append(psnrb)
-            test_results['lpips'].append(lpips_score.item())
-            test_results['dists'].append(dists.item())
-            test_results['niqe'].append(niqe.item())
-            test_results['musiq'].append(musiq.item())
-            test_results['maniqa'].append(maniqa.item())
-            test_results['clipiqa'].append(clipiqa.item())
+                test_results['psnr'].append(psnr)
+                test_results['ssim'].append(ssim)
+                test_results['psnrb'].append(psnrb)
+                test_results['lpips'].append(lpips_score.item())
+                test_results['dists'].append(dists.item())
+                test_results['niqe'].append(niqe.item())
+                test_results['musiq'].append(musiq.item())
+                test_results['maniqa'].append(maniqa.item())
+                test_results['clipiqa'].append(clipiqa.item())
 
-        ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
-        ave_ssim = sum(test_results['ssim']) / len(test_results['ssim'])
-        ave_psnrb = sum(test_results['psnrb']) / len(test_results['psnrb'])
-        avg_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
-        avg_dists = sum(test_results['dists']) / len(test_results['dists'])
-        avg_niqe = sum(test_results['niqe']) / len(test_results['niqe'])
-        avg_musiq = sum(test_results['musiq']) / len(test_results['musiq'])
-        avg_maniqa = sum(test_results['maniqa']) / len(test_results['maniqa'])
-        avg_clipiqa = sum(test_results['clipiqa']) / len(test_results['clipiqa'])
-        # print(
-        #     'Average PSNR/SSIM/PSNRB - {} -: {:.2f}$\\vert${:.4f}$\\vert${:.2f}.'.format(
-        #         str(quality_factor), ave_psnr, ave_ssim, ave_psnrb))
-        if accelerator.is_main_process and not args.debug:
-            wandb.log({'PSNR': ave_psnr, 'LPIPS': avg_lpips, 'DISTS': avg_dists, 'NIQE': avg_niqe, 'MANIQA': avg_maniqa})
+            ave_psnr = sum(test_results['psnr']) / len(test_results['psnr'])
+            ave_ssim = sum(test_results['ssim']) / len(test_results['ssim'])
+            ave_psnrb = sum(test_results['psnrb']) / len(test_results['psnrb'])
+            avg_lpips = sum(test_results['lpips']) / len(test_results['lpips'])
+            avg_dists = sum(test_results['dists']) / len(test_results['dists'])
+            avg_niqe = sum(test_results['niqe']) / len(test_results['niqe'])
+            avg_musiq = sum(test_results['musiq']) / len(test_results['musiq'])
+            avg_maniqa = sum(test_results['maniqa']) / len(test_results['maniqa'])
+            avg_clipiqa = sum(test_results['clipiqa']) / len(test_results['clipiqa'])
+            # print(
+            #     'Average PSNR/SSIM/PSNRB - {} -: {:.2f}$\\vert${:.4f}$\\vert${:.2f}.'.format(
+            #         str(quality_factor), ave_psnr, ave_ssim, ave_psnrb))
+            if accelerator.is_main_process and not args.debug:
+                wandb.log(
+                    {'PSNR': ave_psnr, 'LPIPS': avg_lpips, 'DISTS': avg_dists, 'NIQE': avg_niqe, 'MANIQA': avg_maniqa})
 
-        if torch.cuda.device_count() > 1:
-            model_gen.module.set_train()
-        else:
-            model_gen.set_train()
+            if torch.cuda.device_count() > 1:
+                model_gen.module.set_train()
+            else:
+                model_gen.set_train()
 
 if __name__ == "__main__":
     # from diffusers import DiffusionPipeline

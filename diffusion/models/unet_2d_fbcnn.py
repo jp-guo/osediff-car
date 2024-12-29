@@ -837,6 +837,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
             sample: torch.FloatTensor,
             timestep: Union[torch.Tensor, float, int],
             encoder_hidden_states: torch.Tensor,
+            qf_gt: torch.Tensor,
             class_labels: Optional[torch.Tensor] = None,
             timestep_cond: Optional[torch.Tensor] = None,
             attention_mask: Optional[torch.Tensor] = None,
@@ -906,6 +907,24 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         # The overall upsampling factor is equal to 2 ** (# num of upsampling layers).
         # However, the upsampling interpolation output size can be forced to fit any upsampling size
         # on the fly if necessary.
+
+        qf = self.qfnet.qf_pred(sample)
+        qf_embedding = self.qfnet.qf_embed(qf_gt)
+
+        gamma_4 = self.qfnet.to_gamma_4(qf_embedding)
+        beta_4 = self.qfnet.to_beta_4(qf_embedding)
+
+        gamma_3 = self.qfnet.to_gamma_3(qf_embedding)
+        beta_3 = self.qfnet.to_beta_3(qf_embedding)
+
+        gamma_2 = self.qfnet.to_gamma_2(qf_embedding)
+        beta_2 = self.qfnet.to_beta_2(qf_embedding)
+
+        gamma_1 = self.qfnet.to_gamma_1(qf_embedding)
+        beta_1 = self.qfnet.to_beta_1(qf_embedding)
+
+        gammas = [gamma_1, gamma_2, gamma_3, gamma_4]
+        betas = [beta_1, beta_2, beta_3, beta_4]
 
         default_overall_up_factor = 2 ** self.num_upsamplers
 
@@ -1073,23 +1092,6 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         # 2. pre-process
         sample = self.conv_in(sample)
         # breakpoint()
-        qf = self.qfnet.qf_pred(sample)
-        qf_embedding = self.qfnet.qf_embed(qf)
-
-        gamma_4 = self.qfnet.to_gamma_4(qf_embedding)
-        beta_4 = self.qfnet.to_beta_4(qf_embedding)
-
-        gamma_3 = self.qfnet.to_gamma_3(qf_embedding)
-        beta_3 = self.qfnet.to_beta_3(qf_embedding)
-
-        gamma_2 = self.qfnet.to_gamma_2(qf_embedding)
-        beta_2 = self.qfnet.to_beta_2(qf_embedding)
-
-        gamma_1 = self.qfnet.to_gamma_1(qf_embedding)
-        beta_1 = self.qfnet.to_beta_1(qf_embedding)
-
-        gammas = [gamma_1, gamma_2, gamma_3, gamma_4]
-        betas = [beta_1, beta_2, beta_3, beta_4]
 
         # 2.5 GLIGEN position net
         if cross_attention_kwargs is not None and cross_attention_kwargs.get("gligen", None) is not None:
@@ -1212,9 +1214,9 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
                     scale=lora_scale,
                 )
 
-            for j in range(len(self.qfnet.fuses[i])):
-                sample_fuse = self.qfnet.fuses[i][j](sample, gammas[i], betas[i])
-            sample = sample + sample_fuse
+            # for j in range(len(self.qfnet.fuses[i])):
+            #     sample_fuse = self.qfnet.fuses[i][j](sample, gammas[i], betas[i])
+            sample = sample * (1 + gammas[i].unsqueeze(-1).unsqueeze(-1)) + betas[i].unsqueeze(-1).unsqueeze(-1)
 
         # 6. post-process
         if self.conv_norm_out:
@@ -1229,7 +1231,7 @@ class UNet2DConditionModel(ModelMixin, ConfigMixin, UNet2DConditionLoadersMixin)
         if not return_dict:
             return (sample,)
 
-        return UNet2DConditionOutput(sample=sample)
+        return UNet2DConditionOutput(sample=sample), qf
 
     def merge_and_unload(
             self, progressbar: bool = False, safe_merge: bool = False, adapter_names: Optional[list[str]] = None

@@ -120,7 +120,7 @@ class OSEDiff_gen(torch.nn.Module):
         self.lora_rank_unet = self.args.lora_rank
         self.lora_rank_vae = self.args.lora_rank
 
-        self.unet.qfnet = QFNet()
+        self.unet.qfnet = QFNet(in_c=4)
         self.unet.to("cuda")
         self.vae.to("cuda")
         self.timesteps = torch.tensor([999], device="cuda").long()
@@ -164,11 +164,12 @@ class OSEDiff_gen(torch.nn.Module):
         return prompt_embeds
 
     @torch.no_grad()
-    def eval(self, lq, prompt):
+    def eval(self, lq, prompt, qf_gt):
         prompt_embeds = self.encode_prompt([prompt])
         lq_latent = self.vae.encode(lq).latent_dist.sample() * self.vae.config.scaling_factor
 
-        model_pred = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds).sample
+        model_pred, qf = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds, qf_gt=qf_gt)
+        model_pred = model_pred.sample
         x_denoised = self.noise_scheduler.step(model_pred, self.timesteps, lq_latent, return_dict=True).prev_sample
         output_image = (
             self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
@@ -183,15 +184,15 @@ class OSEDiff_gen(torch.nn.Module):
         prompt_embeds = self.encode_prompt(batch["prompt"])     # 1, 77, 1024
         neg_prompt_embeds = self.encode_prompt(batch["neg_prompt"])
 
-        model_pred = self.unet(encoded_control, self.timesteps,
-                               encoder_hidden_states=prompt_embeds.to(torch.float32), ).sample
+        qf_gt = batch['qf'].to("cuda").reshape(-1, 1)
+        model_pred, qf = self.unet(encoded_control, self.timesteps,
+                               encoder_hidden_states=prompt_embeds.to(torch.float32), qf_gt=qf_gt)
+        model_pred = model_pred.sample
         x_denoised = self.noise_scheduler.step(model_pred, self.timesteps, encoded_control,
                                                return_dict=True).prev_sample
         output_image = (self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample).clamp(-1, 1)
 
-        # breakpoint()
-
-        return output_image, x_denoised, prompt_embeds, neg_prompt_embeds
+        return output_image, x_denoised, prompt_embeds, neg_prompt_embeds, qf
 
     def save_model(self, outf):
         sd = {}
@@ -306,88 +307,90 @@ class OSEDiff_test(torch.nn.Module):
         _, _, h, w = lq_latent.size()
         # breakpoint()
         tile_size, tile_overlap = (self.args.latent_tiled_size, self.args.latent_tiled_overlap)
+        model_pred, qf = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds)
+        model_pred = model_pred.sample
         # breakpoint()
-        if h * w <= tile_size * tile_size:
-            # print(f"[Tiled Latent]: the input size is tiny and unnecessary to tile.")
-            model_pred = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds).sample
-        else:
-            print(f"[Tiled Latent]: the input size is {lq.shape[-2]}x{lq.shape[-1]}, need to tiled")
-            # tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
-            tile_size = min(tile_size, min(h, w))
-            tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
-
-            grid_rows = 0
-            cur_x = 0
-            while cur_x < lq_latent.size(-1):
-                cur_x = max(grid_rows * tile_size - tile_overlap * grid_rows, 0) + tile_size
-                grid_rows += 1
-
-            grid_cols = 0
-            cur_y = 0
-            while cur_y < lq_latent.size(-2):
-                cur_y = max(grid_cols * tile_size - tile_overlap * grid_cols, 0) + tile_size
-                grid_cols += 1
-
-            input_list = []
-            noise_preds = []
-            for row in range(grid_rows):
-                noise_preds_row = []
-                for col in range(grid_cols):
-                    if col < grid_cols - 1 or row < grid_rows - 1:
-                        # extract tile from input image
-                        ofs_x = max(row * tile_size - tile_overlap * row, 0)
-                        ofs_y = max(col * tile_size - tile_overlap * col, 0)
-                        # input tile area on total image
-                    if row == grid_rows - 1:
-                        ofs_x = w - tile_size
-                    if col == grid_cols - 1:
-                        ofs_y = h - tile_size
-
-                    input_start_x = ofs_x
-                    input_end_x = ofs_x + tile_size
-                    input_start_y = ofs_y
-                    input_end_y = ofs_y + tile_size
-
-                    # input tile dimensions
-                    input_tile = lq_latent[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
-                    input_list.append(input_tile)
-
-                    if len(input_list) == 1 or col == grid_cols - 1:
-                        input_list_t = torch.cat(input_list, dim=0)
-                        # predict the noise residual
-                        model_out = self.unet(input_list_t, self.timesteps,
-                                              encoder_hidden_states=prompt_embeds.to(self.weight_dtype), ).sample
-                        input_list = []
-                    noise_preds.append(model_out)
-
-            # Stitch noise predictions for all tiles
-            noise_pred = torch.zeros(lq_latent.shape, device=lq_latent.device)
-            contributors = torch.zeros(lq_latent.shape, device=lq_latent.device)
-            # Add each tile contribution to overall latents
-            for row in range(grid_rows):
-                for col in range(grid_cols):
-                    if col < grid_cols - 1 or row < grid_rows - 1:
-                        # extract tile from input image
-                        ofs_x = max(row * tile_size - tile_overlap * row, 0)
-                        ofs_y = max(col * tile_size - tile_overlap * col, 0)
-                        # input tile area on total image
-                    if row == grid_rows - 1:
-                        ofs_x = w - tile_size
-                    if col == grid_cols - 1:
-                        ofs_y = h - tile_size
-
-                    input_start_x = ofs_x
-                    input_end_x = ofs_x + tile_size
-                    input_start_y = ofs_y
-                    input_end_y = ofs_y + tile_size
-
-                    noise_pred[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += noise_preds[
-                                                                                                  row * grid_cols + col] * tile_weights
-                    contributors[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += tile_weights
-            # Average overlapping areas with more than 1 contributor
-            noise_pred /= contributors
-            model_pred = noise_pred
-
+        # if h * w <= tile_size * tile_size:
+        #     # print(f"[Tiled Latent]: the input size is tiny and unnecessary to tile.")
+        #     model_pred = self.unet(lq_latent, self.timesteps, encoder_hidden_states=prompt_embeds).sample
+        # else:
+        #     print(f"[Tiled Latent]: the input size is {lq.shape[-2]}x{lq.shape[-1]}, need to tiled")
+        #     # tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
+        #     tile_size = min(tile_size, min(h, w))
+        #     tile_weights = self._gaussian_weights(tile_size, tile_size, 1)
+        #
+        #     grid_rows = 0
+        #     cur_x = 0
+        #     while cur_x < lq_latent.size(-1):
+        #         cur_x = max(grid_rows * tile_size - tile_overlap * grid_rows, 0) + tile_size
+        #         grid_rows += 1
+        #
+        #     grid_cols = 0
+        #     cur_y = 0
+        #     while cur_y < lq_latent.size(-2):
+        #         cur_y = max(grid_cols * tile_size - tile_overlap * grid_cols, 0) + tile_size
+        #         grid_cols += 1
+        #
+        #     input_list = []
+        #     noise_preds = []
+        #     for row in range(grid_rows):
+        #         noise_preds_row = []
+        #         for col in range(grid_cols):
+        #             if col < grid_cols - 1 or row < grid_rows - 1:
+        #                 # extract tile from input image
+        #                 ofs_x = max(row * tile_size - tile_overlap * row, 0)
+        #                 ofs_y = max(col * tile_size - tile_overlap * col, 0)
+        #                 # input tile area on total image
+        #             if row == grid_rows - 1:
+        #                 ofs_x = w - tile_size
+        #             if col == grid_cols - 1:
+        #                 ofs_y = h - tile_size
+        #
+        #             input_start_x = ofs_x
+        #             input_end_x = ofs_x + tile_size
+        #             input_start_y = ofs_y
+        #             input_end_y = ofs_y + tile_size
+        #
+        #             # input tile dimensions
+        #             input_tile = lq_latent[:, :, input_start_y:input_end_y, input_start_x:input_end_x]
+        #             input_list.append(input_tile)
+        #
+        #             if len(input_list) == 1 or col == grid_cols - 1:
+        #                 input_list_t = torch.cat(input_list, dim=0)
+        #                 # predict the noise residual
+        #                 model_out = self.unet(input_list_t, self.timesteps,
+        #                                       encoder_hidden_states=prompt_embeds.to(self.weight_dtype), ).sample
+        #                 input_list = []
+        #             noise_preds.append(model_out)
+        #
+        #     # Stitch noise predictions for all tiles
+        #     noise_pred = torch.zeros(lq_latent.shape, device=lq_latent.device)
+        #     contributors = torch.zeros(lq_latent.shape, device=lq_latent.device)
+        #     # Add each tile contribution to overall latents
+        #     for row in range(grid_rows):
+        #         for col in range(grid_cols):
+        #             if col < grid_cols - 1 or row < grid_rows - 1:
+        #                 # extract tile from input image
+        #                 ofs_x = max(row * tile_size - tile_overlap * row, 0)
+        #                 ofs_y = max(col * tile_size - tile_overlap * col, 0)
+        #                 # input tile area on total image
+        #             if row == grid_rows - 1:
+        #                 ofs_x = w - tile_size
+        #             if col == grid_cols - 1:
+        #                 ofs_y = h - tile_size
+        #
+        #             input_start_x = ofs_x
+        #             input_end_x = ofs_x + tile_size
+        #             input_start_y = ofs_y
+        #             input_end_y = ofs_y + tile_size
+        #
+        #             noise_pred[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += noise_preds[
+        #                                                                                           row * grid_cols + col] * tile_weights
+        #             contributors[:, :, input_start_y:input_end_y, input_start_x:input_end_x] += tile_weights
+        #     # Average overlapping areas with more than 1 contributor
+        #     noise_pred /= contributors
+        #     model_pred = noise_pred
+        #
         x_denoised = self.noise_scheduler.step(model_pred, self.timesteps, lq_latent, return_dict=True).prev_sample
         output_image = (self.vae.decode(x_denoised.to(self.weight_dtype) / self.vae.config.scaling_factor).sample).clamp(-1, 1)
 

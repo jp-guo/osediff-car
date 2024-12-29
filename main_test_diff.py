@@ -113,7 +113,7 @@ if __name__ == "__main__":
     clipiqa_metric = pyiqa.create_metric('clipiqa', device=device)
 
     f = open(os.path.join(args.output_dir, 'results.csv'), 'a')
-    for quality_factor in [1, 5, 10, 20, 30, 40]:      # 5, 10, 20, 30, 40
+    for quality_factor in [60]:      # 1, 5, 10, 20, 30, 40
         os.makedirs(os.path.join(args.output_dir, str(quality_factor)), exist_ok=True)
         # os.makedirs(os.path.join(args.output_dir, str(quality_factor)+'_ori'), exist_ok=True)
         test_results = OrderedDict()
