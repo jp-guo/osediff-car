@@ -339,11 +339,11 @@ def main(args):
 
                     logs = {}
                     # log all the losses
+                    logs["loss_discrepancy"] = loss_discrepancy.detach().item()
                     logs["lq_loss_l2"] = lq_loss_l2.detach().item()
                     logs["lq_loss_lpips"] = lq_loss_lpips.detach().item()
                     logs["hq_loss_l2"] = hq_loss_l2.detach().item()
                     logs["hq_loss_lpips"] = hq_loss_lpips.detach().item()
-                    logs["loss_discrepancy"] = loss_discrepancy.detach().item()
                     progress_bar.set_postfix(**logs)
                     if not args.debug:
                         # wandb.log({'epoch': epoch, 'loss_l2': logs["loss_l2"], 'loss_lpips': logs['loss_lpips'],

@@ -11,10 +11,9 @@ CUDA_VISIBLE_DEVICES=0,1,2,3 accelerate launch --main_process_port 12777 main_tr
     --report_to "tensorboard" \
     --seed 123 \
     --neg_prompt="painting, oil painting, illustration, drawing, art, sketch, cartoon, CG Style, 3D render, unreal engine, blurring, dirty, messy, worst quality, low quality, frames, watermark, signature, jpeg artifacts, deformed, lowres, over-smooth" \
-    --cfg_vsd=7.5 \
     --lora_rank=16 \
     --lambda_lpips=2 \
     --lambda_l2=1 \
-    --lambda_discrepancy=0.1 \
+    --lambda_discrepancy=1000 \
     --tracker_project_name "train_consistency" \
 #    --debug
